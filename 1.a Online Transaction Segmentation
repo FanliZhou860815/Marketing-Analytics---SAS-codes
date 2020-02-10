@@ -1,0 +1,1612 @@
+LIBNAME SAKS 'M:\Fanli\EMAIL SEGMENTS\Transaction Segmentation';
+LIBNAME orders 'M:\Orders';
+LIBNAME OMNI 'M:\Fanli\EMAIL SEGMENTS\Transaction Segmentation';
+LIBNAME BC 'M:\Fanli\EMAIL SEGMENTS\Transaction Segmentation\BC';
+LIBNAME SDDB oracle user=fanlizhou pass=****** path=neworacle schema='SDMRK';
+LIBNAME FANLI 'M:\FANLI';
+
+%let rank = MAX;
+%let rank1 = 25;
+
+PROC SQL;
+SELECT PUT(DATE (), YYMMDDN8.) INTO:rundt
+FROM FANLI.WEEKLY_CALENDAR 
+WHERE YEAR IN (SELECT YEAR FROM FANLI.WEEKLY_CALENDAR WHERE DATE=TODAY()+7)
+	  AND WEEK_NUMBER IN (SELECT WEEK_NUMBER  FROM FANLI.WEEKLY_CALENDAR WHERE DATE=TODAY()+7)
+	  AND DAY_OF_WEEK=2;
+QUIT;
+%PUT &rundt.;
+
+
+
+proc sql;
+CREATE TABLE IND_PRE_2013_GRP AS
+	SELECT 
+		INDIVIDUAL_ID,
+		GROUP_ID,
+		SUM(DEMAND_UNITS) AS ITEMS,
+		SUM(DEMAND_DOLLARS) AS NETSALES
+	 FROM 
+		ORDERS.v_orders_hist_NEW 
+	  WHERE 
+		ORDER_LINE_STATUS IN ('D')  AND INDIVIDUAL_ID NOT IN (.,0,999999999)
+		AND DEMAND_DOLLARS>0
+	  GROUP BY 
+		INDIVIDUAL_ID, GROUP_ID
+;
+Quit;
+
+proc sql;
+CONNECT TO oracle as db ( path=neworacle user=fanlizhou	 pass=z658702 );
+CREATE TABLE IND_GRP AS
+select * from connection to db
+(
+	SELECT distinct 
+		INDIVIDUAL_ID,
+		GROUP_ID,
+		SUM(DEMAND_UNITS) AS ITEMS,
+		SUM(DEMAND_DOLLARS) AS NETSALES
+	 FROM 
+		SDMRK.ORDERS
+	  WHERE 
+		ORDER_LINE_STATUS IN ('D')  
+		AND INDIVIDUAL_ID <> 0
+		AND INDIVIDUAL_ID <> 999999999
+		AND INDIVIDUAL_ID IS NOT NULL
+		AND DEMAND_DOLLARS>0
+/*		AND TRUNC(TO_DATE(ORDERDATE),'DD') <= '01-NOV-2017' */
+	  GROUP BY 
+		INDIVIDUAL_ID, GROUP_ID
+)
+;
+Disconnect from db;
+Quit;
+
+PROC APPEND BASE =IND_GRP   DATA=IND_PRE_2013_GRP  FORCE;RUN;
+
+proc sql;
+CONNECT TO oracle as db ( path=neworacle user=fanlizhou	 pass=z658702 );
+CREATE TABLE IND_ORD AS
+select * from connection to db
+(
+	SELECT DISTINCT 
+		INDIVIDUAL_ID,
+		COUNT(DISTINCT ORDER_NUMBER) AS ORDERS,
+		SUM(CASE WHEN ORDER_LINE_STATUS='D' THEN DEMAND_DOLLARS END) AS NETSALES,
+		MAX(CASE WHEN GROUP_ID = '08' THEN 1 ELSE 0 END) AS SZ_FLAG
+	FROM 
+		SDMRK.ORDERS
+	  WHERE 
+		ORDER_LINE_STATUS IN ('D','X','R')  
+		AND INDIVIDUAL_ID <> 0
+		AND INDIVIDUAL_ID <> 999999999
+		AND INDIVIDUAL_ID IS NOT NULL
+		AND DEMAND_DOLLARS>0
+	
+	  GROUP BY 
+		INDIVIDUAL_ID
+)
+;
+Disconnect from db;
+Quit;
+
+PROC SQL;
+CREATE TABLE IND_ORD_HIST AS
+SELECT  DISTINCT
+		INDIVIDUAL_ID,
+		COUNT(DISTINCT ORDER_NUMBER) AS ORDERS,
+		SUM(CASE WHEN ORDER_LINE_STATUS='D' THEN DEMAND_DOLLARS END) AS NETSALES,
+		MAX(CASE WHEN GROUP_ID = '08' THEN 1 ELSE 0 END) AS SZ_FLAG
+FROM 
+		ORDERS.V_ORDERS_HIST_NEW		
+WHERE 
+		ORDER_LINE_STATUS IN ('D','X','R')  AND INDIVIDUAL_ID NOT IN (.,0,999999999) AND DEMAND_DOLLARS>0
+GROUP BY 
+		INDIVIDUAL_ID;
+QUIT;
+
+PROC APPEND BASE =IND_ORD   DATA=IND_ORD_HIST  FORCE;RUN;
+PROC SQL; 
+CREATE TABLE IND_ORD AS
+SELECT 
+	INDIVIDUAL_ID, 
+	SUM(ORDERS) AS ORDERS, 
+	SUM(NETSALES) AS NETSALES ,
+	MAX(SZ_FLAG) AS SZ_FLAG
+FROM 
+	IND_ORD GROUP BY 1;
+QUIT;
+
+PROC SORT DATA =IND_ORD   ; BY INDIVIDUAL_ID ;RUN;
+
+PROC SQL; CREATE TABLE FANLI.CAT_GROUP_ID AS SELECT DISTINCT * FROM FANLI.CAT_GROUP_ID ;QUIT;
+
+
+PROC SQL;
+CREATE TABLE IND_GRP AS
+SELECT
+	DISTINCT A.*, B. CAT
+FROM
+	IND_GRP A INNER JOIN FANLI.CAT_GROUP_ID B ON A.GROUP_ID=B.GROUP_ID;
+QUIT;
+
+PROC SQL;SELECT * FROM FANLI.CAT_GROUP_ID WHERE GROUP_ID ='14';QUIT;
+
+PROC SQL;
+CREATE TABLE CHECKS AS SELECT* FROM IND_GRP WHERE INDIVIDUAL_ID=105720786;
+QUIT;
+
+
+proc sql;
+CREATE TABLE IND_CAT AS
+SELECT 
+	INDIVIDUAL_ID,
+	CAT,
+	SUM(ITEMS) AS ITEMS,
+	SUM(NETSALES) AS NETSALES
+ FROM 
+	IND_GRP
+  GROUP BY 
+	INDIVIDUAL_ID, CAT
+;
+Quit;
+
+
+PROC SORT DATA=IND_CAT; BY INDIVIDUAL_ID CAT ;RUN;
+
+DATA IND_CAT_ITEMS(KEEP=INDIVIDUAL_ID CAT_ITEMS ITEMS)
+	 IND_CAT_NETSALES(KEEP=INDIVIDUAL_ID CAT_NETSALES NETSALES); 
+SET IND_CAT ;
+CAT_ITEMS=COMPRESS(CAT||"_ITEMS");
+CAT_NETSALES=COMPRESS(CAT||"_NETSALES");
+RUN;
+
+
+PROC TRANSPOSE DATA =IND_CAT_ITEMS out = IND_CAT_ITEMS_T ; 
+	ID CAT_ITEMS;
+	BY INDIVIDUAL_ID;
+	VAR ITEMS ;
+RUN;
+
+PROC TRANSPOSE DATA =IND_CAT_NETSALES out = IND_CAT_NETSALES_T ; 
+	ID CAT_NETSALES;
+	BY INDIVIDUAL_ID;
+	VAR NETSALES ;
+RUN;
+
+DATA SAKS.IND_CAT_TTL ;
+MERGE Ind_ord(IN=A)
+	  IND_CAT_ITEMS_T (IN=B)
+	  IND_CAT_NETSALES_T (IN=C);
+BY  INDIVIDUAL_ID;
+IF A OR B OR C;
+RUN;
+
+PROC CONTENTS DATA=SAKS.IND_CAT_TTL  OUT=SAKS.IND_CAT_TTL_COLUMN ; RUN;
+PROC SQL; SELECT NAME INTO: NAME_F  FROM SAKS.IND_CAT_TTL_COLUMN WHERE VARNUM=2;QUIT;
+PROC SQL; SELECT NAME INTO: NAME_L FROM SAKS.IND_CAT_TTL_COLUMN WHERE VARNUM IN (SELECT MAX(VARNUM) FROM SAKS.IND_CAT_TTL_COLUMN );QUIT;
+
+DATA SAKS.IND_CAT_TTL ;
+SET  SAKS.IND_CAT_TTL (drop=_NAME_);
+array testmiss(*) &NAME_F.--&NAME_L.;
+  do i = 1 to dim(testmiss);                                              
+    if testmiss(i)=. then testmiss(i)=0;
+END;
+RUN;
+
+data SAKS.IND_CAT_TTL_1;
+SET SAKS.IND_CAT_TTL;
+by individual_id ;
+format cat_pref1 $20.;
+if NETSALES gt 0 then do;
+		cat1_pc=cat1_NETSALES/NETSALES;
+		sj_pc=sj_NETSALES/NETSALES;
+		cat2_pc=cat2_NETSALES/NETSALES;
+		cat3_pc=cat3_NETSALES/NETSALES;
+		cat4_pc=cat4_NETSALES/NETSALES;
+		cat5_pc=cat5_NETSALES/NETSALES;
+		cat6_pc=cat6_NETSALES/NETSALES;
+		cat7_pc=cat7_NETSALES/NETSALES;
+		cat8_pc=cat8_NETSALES/NETSALES;
+		cat9_pc=cat9_NETSALES/NETSALES;
+		cat10_pc=cat10_NETSALES/NETSALES;
+		cat11_pc=cat11_NETSALES/NETSALES;
+		sz_pc=sz_NETSALES/NETSALES;
+
+		/* calculates for higher than median */
+/*		Benchmarks for each category updated after every fiscal year ends*/
+		if cat1_NETSALES gt 575 and cat1_ITEMS gt 1 then do;
+			aff=1;
+			count+1;
+		end;
+		if sj_NETSALES gt 485 and sj_ITEMS gt 1 then do;
+			aff=13;
+			count+1;
+		end;
+		if cat2_NETSALES gt 219 and cat2_ITEMS gt 1 then do;
+			aff=2;
+			count+1;
+		end;
+		if cat3_NETSALES gt 214 and cat3_ITEMS gt 1 then do;
+			aff=3;
+			count+1;
+		end;
+		if cat4_NETSALES gt 290 and cat4_ITEMS gt 1 then do;
+			aff=4;
+			count+1;
+		end;
+		if cat5_NETSALES gt 315 and cat5_ITEMS gt 1 then do;
+			aff=5;
+			count+1;
+		end;
+		if cat6_NETSALES gt 180 and cat6_ITEMS gt 1 then do;
+			aff=6;
+			count+1;
+		end;
+		if cat7_NETSALES gt 130 and cat7_ITEMS gt 1 then do;
+			aff=7;
+			count+1;
+		end;
+		if cat8_NETSALES gt 105 and cat8_ITEMS gt 2 then do;
+			aff=8;
+			count+1;
+		end;
+		if cat9_NETSALES gt 172 and cat9_ITEMS gt 1 then do;
+			aff=9;
+			count+1;
+		end;
+		if cat10_NETSALES gt 94 and cat10_ITEMS gt 1 then do;
+			aff=10;
+			count+1;
+		end;
+		if cat11_NETSALES gt 74 and cat11_ITEMS gt 1 then do;
+			aff=11;
+			count+1;
+		end;
+
+		if sz_NETSALES gt 276 and sz_ITEMS gt 2 then do;
+			aff=12;
+			count+1;
+		end;
+
+		if count gt 1 then do;
+			if cat1_pc gt pc then do; pc=cat1_pc; aff=1; end; /* combining designer & sj */
+	  		if sj_pc   gt pc then do; pc=sj_pc;   aff=1; end;  
+			if cat2_pc gt pc then do; pc=cat2_pc; aff=2; end;
+			if cat3_pc gt pc then do; pc=cat3_pc; aff=3; end;
+			if cat4_pc gt pc then do; pc=cat4_pc; aff=4; end; /* combining shoes & handbags */
+			if cat5_pc gt pc then do; pc=cat5_pc; aff=5; end; /*Change for S&H Split*/
+			if cat6_pc gt pc then do; pc=cat6_pc; aff=6; end;
+			if cat7_pc gt pc then do; pc=cat7_pc; aff=6; end; /* combining jewelry and access */
+			if cat8_pc gt pc then do; pc=cat8_pc; aff=8; end;
+			if cat9_pc gt pc then do; pc=cat9_pc; aff=9; end;
+			if cat10_pc gt pc then do; pc=cat10_pc; aff=10; end;
+			if cat11_pc gt pc then do; pc=cat11_pc; aff=11; end;
+			if sz_pc gt pc then do; pc=sz_pc; aff=12; end;
+		end;	
+
+		if aff = 0 and orders = 1 then do;
+			pc=0;
+			if cat1_pc gt pc then do; pc=cat1_pc; aff=1; end;
+			if sj_pc gt pc   then do; pc=sj_pc;   aff=1; end;  /*Combining St John into Cat 1*/
+			if cat2_pc gt pc then do; pc=cat2_pc; aff=2; end;
+			if cat3_pc gt pc then do; pc=cat3_pc; aff=3; end;
+			if cat4_pc gt pc then do; pc=cat4_pc; aff=4; end;
+			if cat5_pc gt pc then do; pc=cat5_pc; aff=5; end;/*Change for S&H Split*/
+			if cat6_pc gt pc then do; pc=cat6_pc; aff=6; end;
+			if cat7_pc gt pc then do; pc=cat7_pc; aff=6; end;
+			if cat8_pc gt pc then do; pc=cat8_pc; aff=8; end;
+			if cat9_pc gt pc then do; pc=cat9_pc; aff=9; end;
+			if cat10_pc gt pc then do; pc=cat10_pc; aff=10; end;
+			if cat11_pc gt pc then do; pc=cat11_pc; aff=11; end;
+			if sz_pc gt pc then do; pc=sz_pc; aff=12; end;
+		end;	
+
+		if aff = 0 and orders gt 1 then do;
+			ITEMS=0;
+			if cat1_ITEMS gt ITEMS then do; ITEMS=cat1_ITEMS; aff=1; end;
+			if sj_ITEMS   gt ITEMS then do; ITEMS=sj_ITEMS;   aff=1; end;  /*Combining St John into Cat 1*/
+			if cat2_ITEMS gt ITEMS then do; ITEMS=cat2_ITEMS; aff=2; end;
+			if cat3_ITEMS gt ITEMS then do; ITEMS=cat3_ITEMS; aff=3; end;
+			if cat4_ITEMS gt ITEMS then do; ITEMS=cat4_ITEMS; aff=4; end;
+			if cat5_ITEMS gt ITEMS then do; ITEMS=cat5_ITEMS; aff=5; end;/*Change for S&H Split*/
+			if cat6_ITEMS gt ITEMS then do; ITEMS=cat6_ITEMS; aff=6; end;
+			if cat7_ITEMS gt ITEMS then do; ITEMS=cat7_ITEMS; aff=6; end;
+			if cat8_ITEMS gt ITEMS then do; ITEMS=cat8_ITEMS; aff=8; end;
+			if cat9_ITEMS gt ITEMS then do; ITEMS=cat9_ITEMS; aff=9; end;
+			if cat10_ITEMS gt ITEMS then do; ITEMS=cat10_ITEMS; aff=10; end;
+			if cat11_ITEMS gt ITEMS then do; ITEMS=cat11_ITEMS; aff=11; end;
+			if sz_ITEMS gt ITEMS then do; ITEMS=sz_ITEMS; aff=12; end;
+
+		end;	
+
+		if aff gt 0 then do;
+			if aff=1 then cat_pref1='Designer';
+			if aff=13 then cat_pref1='Designer';
+			if aff=2 then cat_pref1='Contemp';
+			if aff=3 then cat_pref1='Wear';
+			if aff=4 then cat_pref1='Shoes';
+			if aff=5 then cat_pref1='Handbags';
+			if aff=6 then cat_pref1='Jewelry & Access';
+			if aff=7 then cat_pref1='Jewelry & Access';
+			if aff=8 then cat_pref1='Beauty & Fragrance';
+			if aff=9 then cat_pref1='Mens';
+			if aff=10 then cat_pref1='Kids';
+			if aff=11 then cat_pref1='Home/Gourmet/Gifts';
+			if aff=12 then cat_pref1='Salon Z';
+		end;
+	end;
+	if aff=0 or aff = . then cat_pref1='Contemp'; /*assigns preference to all other women's apparel and net sales = $0 */
+
+	keep 	individual_id 	
+			cat1_pc
+			sj_pc
+			cat2_pc
+			cat3_pc
+			cat4_pc
+			cat5_pc
+			cat6_pc
+			cat7_pc
+			cat8_pc
+			cat9_pc
+			cat10_pc
+			cat11_pc
+			sz_pc
+			sz_flag
+			cat_pref1;
+			output;
+run;
+
+
+data SAKS.IND_CAT_TTL_2;
+set SAKS.IND_CAT_TTL_1;
+by individual_id;
+format cat_pref2 $20.;
+	pc=.;
+	pc+0;
+
+if cat_pref1 in ('Designer') then do; cat1_pc=0; sj_pc=0; end;
+if cat_pref1='Contemp' then cat2_pc=0;
+if cat_pref1='Wear' then cat3_pc=0;
+if cat_pref1 in ('Shoes','Handbags') then do; cat4_pc=0; cat5_pc=0; end;/*Shoes&handbags Split Question*/
+if cat_pref1 in ('Jewelry & Access') then do; cat6_pc=0; cat7_pc=0; end;
+if cat_pref1='Beauty & Fragrance' then cat8_pc=0;
+if cat_pref1='Mens' then cat9_pc=0;
+if cat_pref1='Kids' then cat10_pc=0;
+if cat_pref1='Home/Gourmet/Gifts' then cat11_pc=0;
+if cat_pref1='Salon Z' then sz_pc=0;
+
+if cat1_pc gt pc then do; pc=cat1_pc; aff=1; end;
+if sj_pc   gt pc then do; pc=sj_pc;   aff=1; end;
+if cat2_pc gt pc then do; pc=cat2_pc; aff=2; end;
+if cat3_pc gt pc then do; pc=cat3_pc; aff=3; end;
+if cat4_pc gt pc then do; pc=cat4_pc; aff=4; end;
+if cat5_pc gt pc then do; pc=cat5_pc; aff=5; end;/*Split Shoes&Handbags*/
+if cat6_pc gt pc then do; pc=cat6_pc; aff=6; end;
+if cat7_pc gt pc then do; pc=cat7_pc; aff=6; end;
+if cat8_pc gt pc then do; pc=cat8_pc; aff=8; end;
+if cat9_pc gt pc then do; pc=cat9_pc; aff=9; end;
+if cat10_pc gt pc then do; pc=cat10_pc; aff=10; end;
+if cat11_pc gt pc then do; pc=cat11_pc; aff=11; end;
+if sz_pc gt pc then do; pc=sz_pc; aff=12; end;
+
+if aff gt 0 then do;
+	if aff=1 then cat_pref2='Designer';
+
+	if aff=2 then cat_pref2='Contemp';
+	if aff=3 then cat_pref2='Wear';
+	if aff=4 then cat_pref2='Shoes';
+	if aff=5 then cat_pref2='Handbags';/*Split Shoes&Handbags*/
+	if aff=6 then cat_pref2='Jewelry & Access';
+
+	if aff=8 then cat_pref2='Beauty & Fragrance';
+	if aff=9 then cat_pref2='Mens';
+	if aff=10 then cat_pref2='Kids';
+	if aff=11 then cat_pref2='Home/Gourmet/Gifts';
+	if aff=12 then cat_pref2='Salon Z';
+end;
+	keep individual_id 	
+		cat1_pc
+		cat2_pc
+		cat3_pc
+		cat4_pc
+		cat5_pc
+		cat6_pc
+		cat7_pc
+		cat8_pc
+		cat9_pc
+		cat10_pc
+		cat11_pc
+		sj_pc
+		sz_pc
+		sz_flag
+		cat_pref1
+		cat_pref2;
+run;
+/*Done*/
+
+data SAKS.IND_CAT_TTL_3;
+set SAKS.IND_CAT_TTL_2;
+by individual_id;
+	format cat_pref3 $20.;
+	pc=.;
+	pc+0;
+if cat_pref2 in ('Designer') then do; cat1_pc=0; sj_pc=0; end;
+if cat_pref2='Contemp' then cat2_pc=0;
+if cat_pref2='Wear' then cat3_pc=0;
+if cat_pref2 in ('Shoes','Handbags') then do; cat4_pc=0; cat5_pc=0; end;/*Split Shoes&Handbags Question*/
+if cat_pref2='Jewelry & Access' then cat6_pc=0;
+if cat_pref2='Jewelry & Access' then cat7_pc=0;
+if cat_pref2='Beauty & Fragrance' then cat8_pc=0;
+if cat_pref2='Mens' then cat9_pc=0;
+if cat_pref2='Kids' then cat10_pc=0;
+if cat_pref2='Home/Gourmet/Gifts' then cat11_pc=0;
+/*if cat_pref2='St John' then sj_pc=0;*/
+if cat_pref2='Salon Z' then sz_pc=0;
+
+if cat1_pc gt pc then do; pc=cat1_pc; aff=1; end;
+if sj_pc   gt pc then do; pc=sj_pc;   aff=1; end;
+if cat2_pc gt pc then do; pc=cat2_pc; aff=2; end;
+if cat3_pc gt pc then do; pc=cat3_pc; aff=3; end;
+if cat4_pc gt pc then do; pc=cat4_pc; aff=4; end;
+if cat5_pc gt pc then do; pc=cat5_pc; aff=5; end;/*Split Shoes&Handbags Question*/
+if cat6_pc gt pc then do; pc=cat6_pc; aff=6; end;
+if cat7_pc gt pc then do; pc=cat7_pc; aff=6; end;
+if cat8_pc gt pc then do; pc=cat8_pc; aff=8; end;
+if cat9_pc gt pc then do; pc=cat9_pc; aff=9; end;
+if cat10_pc gt pc then do; pc=cat10_pc; aff=10; end;
+if cat11_pc gt pc then do; pc=cat11_pc; aff=11; end;
+/*if sj_pc gt pc then do; pc=sj_pc; aff=12; end;*/
+if sz_pc gt pc then do; pc=sz_pc; aff=12; end;
+
+if aff gt 0 then do;
+	if aff=1 then cat_pref3='Designer';
+	if aff=2 then cat_pref3='Contemp';
+	if aff=3 then cat_pref3='Wear';
+	if aff=4 then cat_pref3='Shoes';
+	if aff=5 then cat_pref3='Handbags';/*Split Shoes&Handbags*/
+	if aff=6 then cat_pref3='Jewelry & Access';
+	if aff=8 then cat_pref3='Beauty & Fragrance';
+	if aff=9 then cat_pref3='Mens';
+	if aff=10 then cat_pref3='Kids';
+	if aff=11 then cat_pref3='Home/Gourmet/Gifts';
+
+	if aff=12 then cat_pref3='Salon Z';
+end;
+	keep individual_id 	
+		cat1_pc
+		cat2_pc
+		cat3_pc
+		cat4_pc
+		cat5_pc
+		cat6_pc
+		cat7_pc
+		cat8_pc
+		cat9_pc
+		cat10_pc
+		cat11_pc
+		sj_pc
+		sz_pc
+		sz_flag
+		cat_pref1
+		cat_pref2
+		cat_pref3;
+run;
+/*Done*/
+
+data SAKS.IND_CAT_TTL_4;
+set SAKS.IND_CAT_TTL_3;
+by individual_id;
+
+	format cat_pref4 $20.;
+	pc=.;
+	pc+0;
+if cat_pref3 in ('Designer') then do; cat1_pc=0; sj_pc=0;end;
+if cat_pref3='Contemp' then cat2_pc=0;
+if cat_pref3='Wear' then cat3_pc=0;
+if cat_pref3 in ('Shoes','Handbags') then do; cat4_pc=0; cat5_pc=0; end;/*Shoes&Handbags Splitting Question*/
+if cat_pref3='Jewelry & Access' then cat6_pc=0;
+if cat_pref3='Jewelry & Access' then cat7_pc=0;
+if cat_pref3='Beauty & Fragrance' then cat8_pc=0;
+if cat_pref3='Mens' then cat9_pc=0;
+if cat_pref3='Kids' then cat10_pc=0;
+if cat_pref3='Home/Gourmet/Gifts' then cat11_pc=0;
+if cat_pref3='Salon Z' then sz_pc=0;
+
+if cat1_pc gt pc then do; pc=cat1_pc; aff=1; end;
+if sj_pc   gt pc then do; pc=sj_pc;   aff=1; end;
+if cat2_pc gt pc then do; pc=cat2_pc; aff=2; end;
+if cat3_pc gt pc then do; pc=cat3_pc; aff=3; end;
+if cat4_pc gt pc then do; pc=cat4_pc; aff=4; end;
+if cat5_pc gt pc then do; pc=cat5_pc; aff=5; end;/*Shoes&Handbags Splitting*/
+if cat6_pc gt pc then do; pc=cat6_pc; aff=6; end;
+if cat7_pc gt pc then do; pc=cat7_pc; aff=6; end;
+if cat8_pc gt pc then do; pc=cat8_pc; aff=8; end;
+if cat9_pc gt pc then do; pc=cat9_pc; aff=9; end;
+if cat10_pc gt pc then do; pc=cat10_pc; aff=10; end;
+if cat11_pc gt pc then do; pc=cat11_pc; aff=11; end;
+if sz_pc gt pc then do; pc=sz_pc; aff=12; end;
+
+if aff gt 0 then do;
+	if aff=1 then cat_pref4='Designer';
+
+	if aff=2 then cat_pref4='Contemp';
+	if aff=3 then cat_pref4='Wear';
+	if aff=4 then cat_pref4='Shoes';
+	if aff=5 then cat_pref4='Handbags';/*Shoes&Handbags Splitting*/
+	if aff=6 then cat_pref4='Jewelry & Access';
+	/*if aff=7 then cat_pref4='Accessories';*/
+	if aff=8 then cat_pref4='Beauty & Fragrance';
+	if aff=9 then cat_pref4='Mens';
+	if aff=10 then cat_pref4='Kids';
+	if aff=11 then cat_pref4='Home/Gourmet/Gifts';
+/*	if aff=12 then cat_pref4='St John';*/
+	if aff=12 then cat_pref4='Salon Z';
+end;
+	if sz_flag=1 and cat_pref1 ne 'Salon Z' and cat_pref2 ne 'Salon Z' and cat_pref3 ne 'Salon Z'
+		then DO; cat_pref3='Salon Z'; END;/* forces customers with salon Z demend but no preference to receive a salon z mailing*/
+	keep individual_id 	
+		cat_pref1
+		cat_pref2
+		cat_pref3
+		cat_pref4;
+run;
+/*Done*/
+
+data SAKS.customers_preference_cross_sjnew;
+set SAKS.IND_CAT_TTL_4;
+by individual_id;
+where cat_pref1 ne ''; /* there are nulls due to grp_id 94, random group number */
+	format cs1 $20.;
+	format cs2 $20.;
+if cat_pref1='Designer' then do; cs1='Wear'; cs2='S&H'; end;
+if cat_pref1='Contemp' then do; cs1='Wear'; cs2='Designer'; end;
+if cat_pref1='Wear' then do; cs1='Contemp'; cs2='Designer'; end;
+if cat_pref1='Shoes' then do; cs1='Designer'; cs2='Contemp'; end;/*Split Shoes&Handbags*/
+if cat_pref1='Handbags' then do; cs1='Designer'; cs2='Contemp'; end;
+if cat_pref1='Jewelry & Access' then do; cs1='S&H'; cs2='Designer'; end;
+if cat_pref1='Beauty & Fragrance' then do; cs1='Jewelry & Access'; cs2='S&H'; end;
+if cat_pref1='Mens' then do; cs1='Kids'; cs2='Home/Gourmet/Gifts'; end;
+if cat_pref1='Kids' then do; cs1='S&H'; cs2='Contemp'; end;
+if cat_pref1='Home/Gourmet/Gifts' then do; cs1='Kids'; cs2='Jewelry & Access'; end;
+if cat_pref1='Salon Z' then do; cs1='Jewelry & Access'; cs2='S&H'; end;
+	keep individual_id 	
+		cat_pref1
+		cat_pref2
+		cat_pref3
+		cat_pref4
+		cs1 cs2;
+run;
+/*Done*/
+
+data SAKS.cm_shoes_handbags_file;
+set SAKS.customers_preference_cross_sjnew;
+if cat_pref1 in ('Beauty & Fragrance') then P1=1;
+if cat_pref1 in ('Contemp') then P1=2;
+if cat_pref1 in ('Designer') then P1=3;
+if cat_pref1 in ('Home/Gourmet/Gifts') then P1=4;
+if cat_pref1 in ('Kids') then P1=5;
+if cat_pref1 in ('Mens') then P1=6;
+if cat_pref1 in ('Salon Z') then P1=7;
+if cat_pref1 in ('Shoes') then P1=81;
+if cat_pref1 in ('Handbags') then P1=82;
+if cat_pref1 in ('Wear') then P1=9;
+if cat_pref1 in ('Jewelry & Access') then P1=10;
+
+if cat_pref2 ne '' then do;
+if cat_pref2 in ('Beauty & Fragrance') then P2=1;
+if cat_pref2 in ('Contemp') then P2=2;
+if cat_pref2 in ('Designer') then P2=3;
+if cat_pref2 in ('Home/Gourmet/Gifts') then P2=4;
+if cat_pref2 in ('Kids') then P2=5;
+if cat_pref2 in ('Mens') then P2=6;
+if cat_pref2 in ('Salon Z') then P2=7;
+if cat_pref2 in ('Shoes','Handbags') then P2=8;
+if cat_pref2 in ('S&H') then P2=8;
+if cat_pref2 in ('Wear') then P2=9;
+if cat_pref2 in ('Jewelry & Access') then P2=10;
+end;
+
+if cat_pref3 ne '' then do;
+if cat_pref3 in ('Beauty & Fragrance') then P3=1;
+if cat_pref3 in ('Contemp') then P3=2;
+if cat_pref3 in ('Designer') then P3=3;
+if cat_pref3 in ('Home/Gourmet/Gifts') then P3=4;
+if cat_pref3 in ('Kids') then P3=5;
+if cat_pref3 in ('Mens') then P3=6;
+if cat_pref3 in ('Salon Z') then P3=7;
+if cat_pref3 in ('Shoes','Handbags') then P3=8;
+if cat_pref3 in ('S&H') then P3=8;
+if cat_pref3 in ('Wear') then P3=9;
+if cat_pref3 in ('Jewelry & Access') then P3=10;
+end;
+
+if cs1 in ('Beauty & Fragrance') then cs_1=1;
+if cs1 in ('Contemp') then cs_1=2;
+if cs1 in ('Designer') then cs_1=3;
+if cs1 in ('Home/Gourmet/Gifts') then cs_1=4;
+if cs1 in ('Kids') then cs_1=5;
+if cs1 in ('Mens') then cs_1=6;
+if cs1 in ('Salon Z') then cs_1=7;
+if cs1 in ('Shoes','Handbags') then cs_1=8;
+if cs1 in ('S&H') then cs_1=8;
+if cs1 in ('Wear') then cs_1=9;
+if cs1 in ('Jewelry & Access') then cs_1=10;
+
+if cs2 in ('Beauty & Fragrance') then cs_2=1;
+if cs2 in ('Contemp') then cs_2=2;
+if cs2 in ('Designer') then cs_2=3;
+if cs2 in ('Home/Gourmet/Gifts') then cs_2=4;
+if cs2 in ('Kids') then cs_2=5;
+if cs2 in ('Mens') then cs_2=6;
+if cs2 in ('Salon Z') then cs_2=7;
+if cs2 in ('Shoes','Handbags') then cs_2=8;
+if cs2 in ('S&H') then cs_2=8;
+if cs2 in ('Wear') then cs_2=9;
+if cs2 in ('Jewelry & Access') then cs_2=10;
+
+if  cat_pref2 ='' and cat_pref3='' then do;
+	p2=cs_1 ;
+	p3=cs_2 ;
+	p2_csflag=1;
+	p3_csflag=1;
+end;
+
+if  cat_pref2 = '' and cat_pref3  ne '' then do;
+	if p3 ne cs_1 then do
+		p2 = cs_1 ;
+		p2_csflag=1;
+	end;
+
+	else if p3 = cs_1 then do
+		p2 = cs_2;
+		p2_csflag=1;
+	end;
+end;
+
+if  cat_pref2 ne '' and cat_pref3 ='' then do;
+	if p2 = cs_1 then p3=cs_2;
+	if p2 ne  cs_1 then p3=cs_1;
+	p3_csflag=1;
+end;
+
+keep 
+	individual_id
+	P1
+	P2
+	P3
+	P2_csflag
+	P3_csflag
+	;
+run;
+
+proc sql;select count(*) as obs  from SAKS.cm_shoes_handbags_file where p1=p2 or p1=p3 or p2=p3;quit;
+
+proc sql;
+create table SAKS.P123_ct as
+select distinct P1, P2, P3, count(distinct individual_id) as inds
+from  SAKS.cm_shoes_handbags_file
+group by 1,2,3;
+quit;
+
+PROC SQL;
+CREATE TABLE EMAIL_IND AS
+SELECT DISTINCT INDIVIDUAL_ID, EMAIL_ADDRESS
+FROM SDDB.CUSTOMER
+WHERE INDIVIDUAL_ID NOT IN (.,0,999999999);
+QUIT;
+
+PROC SQL;
+CREATE TABLE SAKS.cm_shoes_handbags_file AS
+SELECT
+	DISTINCT A.*, B. EMAIL_ADDRESS
+FROM
+	SAKS.cm_shoes_handbags_file A INNER JOIN EMAIL_IND B ON A.INDIVIDUAL_ID=B.INDIVIDUAL_ID;
+QUIT;
+
+
+proc sql;
+create table SAKS.cm_shoes_handbags_file  as
+select
+	distinct 
+		*,
+		count(p1) as count_p1,
+		count(p2) as count_p2,
+		count(p3) as count_p3
+from
+	SAKS.cm_shoes_handbags_file 
+group by
+	email_address;
+quit;
+
+DATA SAKS.cm_shoes_handbags_file_1_P1
+	 SAKS.cm_shoes_handbags_file_2_P1;
+SET  SAKS.cm_shoes_handbags_file;
+IF count_p1=1 AND count_p2=1 AND count_p3=1  THEN OUTPUT SAKS.cm_shoes_handbags_file_1_P1;
+IF count_p1>1 OR count_p2>2 OR count_p3>1 THEN OUTPUT SAKS.cm_shoes_handbags_file_2_P1;
+RUN;
+
+proc sql;
+connect to oracle as ora (path=neworacle user=fanlizhou pass=z658702);
+create table ORDER_COMPLETE as select * from connection to ora
+(     select INDIVIDUAL_ID ,  ORDER_NUMBER, ORDERDATE, ORDER_LINE_STATUS, GROUP_ID, SKU, DEMAND_UNITS, DEMAND_DOLLARS
+      from  sdmrk.orders 
+);
+disconnect from ora;
+quit;
+
+
+proc sql;
+create table order_pre_2013 as 
+select  INDIVIDUAL_ID ,  ORDER_NUMBER, ORDERDATE, ORDER_LINE_STATUS, GROUP_ID, SKU, DEMAND_UNITS, DEMAND_DOLLARS
+from  orders.V_ORDERS_HIST_NEW
+;
+quit;
+
+proc append base=ORDER_COMPLETE data=order_pre_2013;run;
+
+PROC SQL;
+SELECT DISTINCT  YEAR(DATEPART(ORDERDATE)) AS YR, SUM(DEMAND_DOLLARS)/1000000 AS DMD FROM ORDER_COMPLETE GROUP BY 1;
+QUIT;
+
+
+
+PROC SQL;
+CREATE TABLE IND_LORD_DT AS
+SELECT 
+	DISTINCT INDIVIDUAL_ID,
+	max(orderdate) as l_orderdate format datetime20.,
+	count(distinct(case when order_line_status in ('D') then order_number end)) as ords 
+FROM
+	ORDER_COMPLETE
+GROUP BY 1;
+QUIT;
+
+/*Get latest orderdate for each individual_id*/
+proc sql;
+create table multi_p1_emls_order as
+select
+	distinct
+		email_address,
+		a.individual_id,
+		p1,
+		p2,
+		p3,
+		p2_csflag,
+		p3_csflag,
+		l_orderdate ,
+		ords 
+from
+	SAKS.cm_shoes_handbags_file_2_P1 a left join IND_LORD_DT b
+on
+	a.individual_id=b.individual_id
+where
+	a. individual_id ne 0 and a.individual_id ne .
+;
+quit;
+
+
+/*Use 6 months as a cutoff to determin whether the individual_id is active or not*/
+data multi_p1_emls_order;
+set multi_p1_emls_order;
+interval=intck('month',datepart(l_orderdate),today());
+if interval <=6 then active_flag=1;
+else if interval > 6 then active_flag=0;
+run;
+
+/*get max orderdate and order_number for each email_address*/
+proc sql;
+create table multi_p1_emls_order as
+select 
+	distinct
+		*,
+		max(l_orderdate) as max_lord_dt format datetime20.,
+		count(case when active_flag=1 then individual_id end) as active_counts,
+		max(case when active_flag=1 then ords end) as max_ord
+from
+	multi_p1_emls_order
+group by
+	email_address;
+quit;
+
+/*for emails with multiple active ids, select the one with most orders*/
+data multi_p1_emls_order ;
+set multi_p1_emls_order ;
+
+if active_counts <=1 then do;
+   if l_orderdate=max_lord_dt then select_flag=1;
+end;
+
+else if active_counts >1 then do;
+   if max_ord=ords and active_flag=1 then select_flag=1;
+end;
+run;
+
+proc sql;
+create table multi_p1_emls_select as
+select
+	distinct
+		*
+from
+	multi_p1_emls_order
+where
+	select_flag=1;
+quit;
+
+
+proc sql;
+create table multi_p1_emls_select as
+select
+	distinct *,
+	count( distinct individual_id) as ids
+from
+	multi_p1_emls_select
+group by
+	email_address
+order by
+	calculated ids desc,
+	email_address;
+quit;
+
+
+/*Ranking of merchandising in case of ties*/
+DATA p_ranking;
+INPUT p best2. ranking best2.;
+CARDS;
+2 1
+8 2
+3 3
+6 4
+1 5
+9 6
+10 7
+5 8
+4 9
+7 10
+run;
+
+proc sql;
+create table multi_p1_emls_select as
+select
+	distinct a.*, 
+	b.ranking as ranking_1,
+	C.ranking as ranking_2,
+	D.ranking as ranking_3
+from
+	multi_p1_emls_select a 
+	left join p_ranking b on a.p1=b.p
+	left join p_ranking C on a.p2=C.p
+	left join p_ranking D on a.p2=D.p
+	ORDER by email_address, ranking_1, ranking_2, ranking_3;
+quit;
+
+DATA multi_p1_emls_select;
+SET multi_p1_emls_select END=EOF; 			
+BY email_address; 							
+IF FIRST.email_address THEN DO; 			
+	NUMMETRIC+1; 							
+	METRICS=0; 								
+END;
+METRICS+1; 	
+run;
+
+proc sql;
+create table  SAKS.Cm_shoes_handbags_file_2_p1 as
+select 
+	distinct 
+		email_address,
+		individual_id,
+		p1,
+		p2,
+		p3,
+		p2_csflag,
+		p3_csflag 
+from 
+	multi_p1_emls_select
+where metrics=1;
+quit;
+
+
+proc sql;
+select 
+	count(distinct email_address) as emls,
+	count(p1) as p1s
+from
+	SAKS.Cm_shoes_handbags_file_2_p1;
+
+
+data SAKS.Cm_shoes_handbags_file_UNIQ;
+set SAKS.Cm_shoes_handbags_file_1_p1
+	SAKS.Cm_shoes_handbags_file_2_p1;
+run;
+PROC SQL;
+CREATE TABLE SAKS.Cm_shoes_handbags_file_UNIQ_EML AS
+SELECT DISTINCT EMAIL_ADDRESS, P1, P2, P3, P2_CSFLAG, P3_CSFLAG FROM SAKS.Cm_shoes_handbags_file_UNIQ;
+QUIT;
+
+proc sql;
+select COUNT(DISTINCT EMAIL_ADDRESS), COUNT(*) AS OBS
+from  SAKS.Cm_shoes_handbags_file_UNIQ; quit;
+
+/*End of Online P1*/
+
+
+**********************************************
+**********************************************
+**********START OF HYPERSEGMENTATION**********
+**********************************************
+**********************************************
+;
+
+PROC SQL;
+CREATE TABLE PRODUCT AS
+SELECT DISTINCT BRAND_NAME, SKU FROM SDDB.PRODUCT ;
+QUIT;
+
+
+/*REGULAR*/
+PROC SQL;
+CREATE TABLE BC.IND_CAT_BRAND_DETAIL_HIST_P AS
+SELECT
+	DISTINCT
+		C.INDIVIDUAL_ID, /*Only eligible individuals*/
+		D.P1,
+		A.CATEGORY, /*by category, joining on group_id*/
+		UPCASE(B.BRAND_NAME) AS BRAND_NAME, /*by brand, joining at a sku/upc & group level(?) with product*/
+		COUNT(DISTINCT C.ORDER_NUMBER) AS ORDERS_PURCHASED,/*where D and R*/
+		SUM(DEMAND_UNITS) AS QTY_PURCHASED, /*Items Purchased*/
+		SUM(DEMAND_DOLLARS) AS DEMAND_SHIPPED
+FROM
+	(SELECT 
+		DISTINCT 
+		INDIVIDUAL_ID, 
+		(CASE WHEN P1 IN (81,82) THEN 8 ELSE P1 END) AS P1 FROM SAKS.Cm_shoes_handbags_file) D 
+	JOIN ORDER_COMPLETE C ON D.INDIVIDUAL_ID = C.INDIVIDUAL_ID
+	JOIN (SELECT GROUP_ID , 
+			(CASE WHEN CATEGORY IN('81 Shoes','82 Handbags') THEN '08 S&H' ELSE CATEGORY END) AS CATEGORY 
+		 FROM FANLI.CATEGORY_MAP) A ON C.GROUP_ID = A.GROUP_ID 	
+	LEFT JOIN PRODUCT B ON B.SKU = C.SKU
+WHERE
+	C.ORDER_LINE_STATUS IN ('X','D','R') /*TO KEEP CONSISTENT WITH EMAIL SEG*/
+	AND B.BRAND_NAME NOT IN ('ZZOBSOLETEBRAND')
+	AND B.BRAND_NAME NE ' '
+	AND C.INDIVIDUAL_ID NE . 
+	AND C.INDIVIDUAL_ID NE 0
+	AND C.INDIVIDUAL_ID NE 999999999 
+	and A.CATEGORY NOT IN ('04 Home/Gourmet/Gifts','07 Salon Z','11 All Other','10 Jewelry & Access')
+	and D.P1 NOT IN (4,7,10)
+GROUP BY
+	C.INDIVIDUAL_ID,
+	A.CATEGORY,
+	B.BRAND_NAME,
+	D.P1
+;
+QUIT;	
+
+
+
+DATA BC.IND_CAT_BRAND_DETAIL_HIST_P;
+SET BC.IND_CAT_BRAND_DETAIL_HIST_P;
+/*FORMAT BRAND_NAME2 $50.;*/
+BRAND_NAME = UPCASE(COMPRESS(TRIM(BRAND_NAME),"& _ . ' - 1234567890 + * ^ ( ) @ # ! ~ ` '  : ; < > / ? { [ } ] | \ ="));
+BRAND_NAME=tranwrd(brand_name, "CHLOÉ", "CHLOE");
+BRAND_NAME=tranwrd(brand_name, "ESTÉELAUDER", "ESTEELAUDER");
+BRAND_NAME=tranwrd(brand_name, "LANCÔME", "LANCOME");
+BRAND_NAME=tranwrd(brand_name, "NAMBÉ", "NAMBE");
+BRAND_NAME=tranwrd(brand_name, "CLÉDEPEAUBEAUTÉ", "CLEDEPEAUBEAUTE");
+BRAND_NAME=tranwrd(brand_name, "RÉVIVE", "REVIVE");
+/*BRAND_NAME=tranwrd(brand_name, "FURLAEXCLUSIVELYFORSAKSFIFTHAVEN", "FURLA");*/
+CATEGORY = Compress(TRIM(CATEGORY),"& / ");
+FORMAT CAT_P1_SUBSTR 2.;
+CAT_P1_SUBSTR = SUBSTR(CATEGORY,1,2);
+RUN;
+
+
+
+PROC SQL;
+CREATE TABLE BC.IND_CAT_BRAND_DETAIL_HIST AS
+SELECT DISTINCT
+	INDIVIDUAL_ID,
+	CATEGORY,
+	P1,
+	BRAND_NAME,
+	CAT_P1_SUBSTR,
+	SUM(ORDERS_PURCHASED) AS ORDERS_PURCHASED,
+	SUM(QTY_PURCHASED) AS QTY_PURCHASED,
+	SUM(DEMAND_SHIPPED) AS DEMAND_SHIPPED
+FROM
+	BC.IND_CAT_BRAND_DETAIL_HIST_P
+GROUP BY
+	INDIVIDUAL_ID,
+	CATEGORY,
+	P1,
+	CAT_P1_SUBSTR,
+	BRAND_NAME
+;
+QUIT;
+
+PROC SUMMARY DATA = BC.IND_CAT_BRAND_DETAIL_HIST nway missing;
+	VAR QTY_PURCHASED;
+	CLASS INDIVIDUAL_ID CATEGORY;
+	OUTPUT OUT = BC.IND_CAT_HIST_SUMMARY (DROP=_:) SUM=;
+RUN;
+
+PROC SQL;
+CREATE TABLE BC.TOP&rank._CAT_HIST AS
+SELECT
+	DISTINCT 
+			 A.CATEGORY,
+			 A.INDIVIDUAL_ID,
+			 A.P1,
+			 UPCASE(A.BRAND_NAME) AS BRAND_NAME,
+			 A.QTY_PURCHASED
+FROM
+	BC.IND_CAT_BRAND_DETAIL_HIST A  /*History File*/
+/*	This file will map to BRAND_CAT_SUMMARY2 AND NOT BRAND_CAT_SUMMARY_HIST2 BECAUSE WE WANT THE TOP 25 BASED ON r,d CONDITION*/
+	JOIN BC.BRAND_CAT_SUMMARY2 B ON A.BRAND_NAME = B.BRAND_NAME    AND A.CATEGORY = B.CATEGORY  /*Top 25 brands by Cat in last 24 months*/
+	JOIN BC.IND_CAT_HIST_SUMMARY C ON A.INDIVIDUAL_ID = C.INDIVIDUAL_ID AND C.CATEGORY = B.CATEGORY  /*Ind Cat Summary based on All History*/
+	
+WHERE
+	B.S_NO LE &RANK1.
+	AND B.BRAND_NAME NE ' '
+	AND B.BRAND_NAME  NOT IN ('ZZOBSOLETEBRAND')
+	AND C.QTY_PURCHASED GE 2  /*Cat Brand Summary - unCommented*/
+	AND A.QTY_PURCHASED GT 0		/*Cat Summary*/
+	AND A.P1 NOT IN (4,7,10)
+	AND A.CAT_P1_SUBSTR = A.P1
+ORDER BY
+	A.CATEGORY,
+	A.INDIVIDUAL_ID,
+	A.P1
+;
+QUIT;
+
+
+PROC SQL; 
+CREATE TABLE BC.MASTER_CUTA AS
+SELECT DISTINCT A.INDIVIDUAL_ID FROM BC.IND_CAT_BRAND_DETAIL_HIST A
+EXCEPT
+SELECT DISTINCT B.INDIVIDUAL_ID FROM BC.TOP&rank._CAT_HIST B
+;
+QUIT;
+
+proc univariate data= BC.TOP&rank._CAT_HIST plot noprint;
+var QTY_PURCHASED;
+CLASS CATEGORY BRAND_NAME;
+output out= BC.UNIV_BRAND_TOP&rank._CAT_HIST  n=n nmiss=nmiss min=min max=max mean=mean std=std 
+pctlpts=0 5 10 20 30 40 50 60 70 80 90 92 95 98 99 100 pctlpre=p_ ;
+run;
+
+/*Removing outliers, 99 percentile n above; HAVE TO SCORE EVERYONE. SO IGNORING THIS STEP*/
+PROC SQL;
+CREATE TABLE BC.TOP&rank._CAT_HIST_2 AS
+SELECT
+	DISTINCT A.*
+FROM
+	BC.TOP&rank._CAT_HIST A
+	JOIN BC.UNIV_BRAND_TOP&rank._CAT_HIST B ON UPCASE(A.BRAND_NAME) = UPCASE(B.BRAND_NAME) AND A.CATEGORY = B.CATEGORY
+WHERE
+	A.QTY_PURCHASED <= B.P_100
+;
+QUIT;
+
+
+proc sql; select count(distinct brand_name) from bc.IND_CAT_BRAND_DETAIL_HIST; quit;
+proc sql; select count(distinct brand_name) from bc.TOP&rank._CAT_HIST; quit;
+proc sql; select count(distinct brand_name) from bc.TOP&rank._CAT_HIST_2; quit;
+
+
+proc univariate data= BC.TOP&rank._CAT_HIST_2 plot noprint;
+var QTY_PURCHASED;
+CLASS CATEGORY BRAND_NAME;
+output out= BC.UNIV_BRAND_TOP&rank._CAT_HIST_2  n=n nmiss=nmiss min=min max=max mean=mean std=std 
+pctlpts=0 5 10 20 30 40 50 60 70 80 90 92 95 98 99 100 pctlpre=p_ ;
+run;
+
+DATA BC.TOP&rank._CAT_HIST_2;
+SET BC.TOP&rank._CAT_HIST_2;
+/*FORMAT BRAND_NAME2 $50.;*/
+BRAND_NAME = UPCASE(COMPRESS(TRIM(BRAND_NAME),"& _ . ' - 1234567890 + * ^ ( ) @ # ! ~ ` '  : ; < > / ? { [ } ] | \ ="));
+BRAND_NAME=tranwrd(brand_name, "CHLOÉ", "CHLOE");
+BRAND_NAME=tranwrd(brand_name, "ESTÉELAUDER", "ESTEELAUDER");
+BRAND_NAME=tranwrd(brand_name, "LANCÔME", "LANCOME");
+BRAND_NAME=tranwrd(brand_name, "NAMBÉ", "NAMBE");
+BRAND_NAME=tranwrd(brand_name, "CLÉDEPEAUBEAUTÉ", "CLEDEPEAUBEAUTE");
+BRAND_NAME=tranwrd(brand_name, "RÉVIVE", "REVIVE");
+/*BRAND_NAME=tranwrd(brand_name, "FURLAEXCLUSIVELYFORSAKSFIFTHAVEN", "FURLA");*/
+BRAND_NAME=tranwrd(brand_name, ",", "_");
+CATEGORY = Compress(TRIM(CATEGORY),"& / ");
+RUN;
+
+
+*****************************************************************************************
+
+								SCORING
+
+*****************************************************************************************;
+
+
+PROC SORT DATA = BC.TOP&rank._CAT_HIST_2; BY BRAND_NAME; RUN;
+/*PROC SORT DATA = BC.TOP&rank._CAT_HIST; BY BRAND_NAME; RUN;*/
+
+PROC SQL;
+CREATE TABLE BC.TOP&rank._CAT_HIST_3 AS
+SELECT
+		A.INDIVIDUAL_ID,
+		A.CATEGORY,
+		A.P1,
+		A.BRAND_NAME,
+		A.QTY_PURCHASED,
+		B.CLUSTER,
+		B.WEIGHT,
+		(A.QTY_PURCHASED * B.WEIGHT) AS WGHT_QTY /*Calculating Weighted Quantities*/
+FROM
+	BC.TOP&rank._CAT_HIST_2 A
+/*	BC.TOP&rank._CAT_HIST A*/
+	JOIN BC.BRAND_CLUSTER B ON A.BRAND_NAME = B.BRAND
+ORDER BY
+		A.INDIVIDUAL_ID,
+		A.CATEGORY,
+		A.P1,
+		A.BRAND_NAME,
+		A.QTY_PURCHASED,
+		B.CLUSTER,
+		B.WEIGHT
+;
+QUIT;
+
+proc sql; select count(distinct brand_name) from bc.TOP&rank._CAT_HIST_3; quit;
+
+/*CHECK*/
+PROC SORT DATA = BC.TOP&rank._CAT_HIST_3; BY INDIVIDUAL_ID CATEGORY BRAND_NAME QTY_PURCHASED; RUN;
+PROC SORT DATA = BC.TOP&rank._CAT_HIST_2; BY INDIVIDUAL_ID CATEGORY BRAND_NAME QTY_PURCHASED; RUN;
+/*PROC SORT DATA = BC.TOP&rank._CAT_HIST; BY INDIVIDUAL_ID CATEGORY BRAND_NAME QTY_PURCHASED; RUN;*/
+
+DATA BC.MISS;
+MERGE BC.TOP&rank._CAT_HIST_2 (IN = A) BC.TOP&rank._CAT_HIST_3 (IN = B);
+/*MERGE BC.TOP&rank._CAT_HIST (IN = A) BC.TOP&rank._CAT_HIST_3 (IN = B);*/
+BY INDIVIDUAL_ID CATEGORY BRAND_NAME QTY_PURCHASED;
+IF A AND NOT B;
+RUN;
+
+PROC SQL; SELECT DISTINCT CATEGORY, BRAND_NAME FROM BC.MISS; QUIT;
+/*7 brands*/
+
+PROC SUMMARY DATA = BC.TOP&rank._CAT_HIST_3 nway missing;
+	VAR WGHT_QTY;
+	CLASS INDIVIDUAL_ID CATEGORY CLUSTER P1;
+	OUTPUT OUT = BC.TOP&rank._CAT_HIST_4 (DROP=_:) SUM=;
+RUN;
+
+
+PROC SQL;
+CREATE TABLE BC.TOP&rank._CAT_HIST_5 AS
+SELECT
+		A.INDIVIDUAL_ID,
+		A.CATEGORY,
+		A.P1,
+		A.CLUSTER,
+		A.WGHT_QTY,
+		B.COUNT,
+		(A.WGHT_QTY/B.COUNT) AS NORM_WGHT_QTY /*Normalizing the Weighted Quantity*/
+FROM
+	BC.TOP&rank._CAT_HIST_4 A
+	JOIN BC.CLUSTER_COUNT B ON A.CATEGORY = B.CATEGORY AND A.CLUSTER = B.CLUSTER 
+ORDER BY
+		A.INDIVIDUAL_ID,
+		A.CATEGORY,
+		A.P1,
+		A.CLUSTER,
+		A.WGHT_QTY,
+		B.COUNT
+;
+QUIT;
+
+
+PROC SQL;
+CREATE TABLE BC.TOP&rank._CAT_HIST_6 AS
+SELECT
+	DISTINCT
+	INDIVIDUAL_ID,
+	CATEGORY,
+	p1,
+	MAX(NORM_WGHT_QTY) AS NORM_WGHT_QTY /*Obtaining Max per Category*/
+FROM
+	BC.TOP&rank._CAT_HIST_5
+GROUP BY
+	INDIVIDUAL_ID,
+	CATEGORY,
+	P1
+ORDER BY
+	INDIVIDUAL_ID,
+	CATEGORY,
+	P1
+;
+QUIT;
+
+PROC SORT DATA = BC.TOP&rank._CAT_HIST_5; BY INDIVIDUAL_ID CATEGORY P1 NORM_WGHT_QTY; RUN;
+PROC SORT DATA = BC.TOP&rank._CAT_HIST_6; BY INDIVIDUAL_ID CATEGORY P1 NORM_WGHT_QTY; RUN;
+
+/*Getting Final Factor Assignment per Customer and Category*/
+DATA BC.TOP&rank._CAT_HIST_7 (KEEP = INDIVIDUAL_ID CATEGORY p1 NORM_WGHT_QTY CLUSTER);
+MERGE BC.TOP&rank._CAT_HIST_6 (IN=A) BC.TOP&rank._CAT_HIST_5(IN = B);
+BY INDIVIDUAL_ID CATEGORY NORM_WGHT_QTY;
+IF A AND B;
+RUN;
+
+/*Checking that each individual is assigned no more than one factor per category*/
+PROC SQL;
+CREATE TABLE BC.TOP&rank._CAT_HIST_8 AS
+SELECT
+	DISTINCT INDIVIDUAL_ID, CATEGORY, p1, COUNT(DISTINCT CLUSTER) AS COUNT
+FROM
+	BC.TOP&rank._CAT_HIST_7
+GROUP BY
+	INDIVIDUAL_ID, CATEGORY, P1
+ORDER BY
+	COUNT DESC
+;
+QUIT;
+
+PROC SQL; SELECT P1, COUNT(DISTINCT INDIVIDUAL_ID) AS COUNT
+FROM BC.TOP&rank._CAT_HIST_8 GROUP BY P1;
+QUIT;
+
+;
+
+PROC SQL; SELECT P1,CLUSTER, COUNT(DISTINCT INDIVIDUAL_ID) AS COUNT
+FROM BC.TOP&rank._CAT_HIST_7 GROUP BY P1, CLUSTER;
+QUIT;
+
+/*Scoring 1 timers across all HS Categories using Correlation Mapping File*/
+
+
+PROC SQL;
+CREATE TABLE BC.TOP&rank._CAT_HISTLT2 AS
+SELECT
+	DISTINCT 
+			 A.CATEGORY,
+			 A.INDIVIDUAL_ID,
+			 A.P1,
+			 UPCASE(A.BRAND_NAME) AS BRAND_NAME,
+			 A.QTY_PURCHASED,
+			 F.CLUSTER
+FROM
+	BC.MASTER_CUTA A1 
+	JOIN BC.IND_CAT_BRAND_DETAIL_HIST A  ON A.INDIVIDUAL_ID = A1.INDIVIDUAL_ID /*History File*/
+	/*JOIN BC.BRAND_CAT_SUMMARY2 B ON A.BRAND_NAME = B.BRAND_NAME    AND A.CATEGORY = B.CATEGORY  /*Top 25 brands by Cat in last 24 months*/
+	JOIN BC.IND_CAT_HIST_SUMMARY C ON A.INDIVIDUAL_ID = C.INDIVIDUAL_ID AND C.CATEGORY = A.CATEGORY  /*Ind Cat Summary based on All History*/
+/*	JOIN BC.MAX_RANK_CAT E ON C.CATEGORY = E.CATEGORY*/
+	JOIN BC.CORRELATION_MASTER F ON C.CATEGORY = F.CATEGORY AND A.BRAND_NAME = F._NAME_
+WHERE
+/*	B.S_NO LE E.MAX_RANK*/
+/*	<= &rank.*/
+/*	AND */
+	UPCASE(A.BRAND_NAME) NE ' '
+	AND UPCASE(A.BRAND_NAME)  NOT IN ('ZZOBSOLETEBRAND')
+	AND C.QTY_PURCHASED LT 2  /*Cat Brand Summary - unCommented*/
+	AND A.QTY_PURCHASED GT 0		/*Cat Summary*/
+	AND A.P1 NOT IN (4,7,10)
+	AND A.CAT_P1_SUBSTR = A.P1
+ORDER BY
+	A.CATEGORY,
+	A.INDIVIDUAL_ID,
+	A.P1
+;
+QUIT;
+
+proc sql; select count(distinct individual_id) as sum_count from BC.TOP&rank._CAT_HISTLT2; quit;
+/*723299*/
+/*733388 OCT02 2013*/
+/*826020 DEC06 2013*/
+/*863352 fEB 2014*/
+/*876775 MAR 2014*/
+
+
+PROC SQL; 
+CREATE TABLE BC.MASTER_CUTB AS
+SELECT DISTINCT A.INDIVIDUAL_ID FROM  BC.MASTER_CUTA A
+EXCEPT
+SELECT DISTINCT B.INDIVIDUAL_ID FROM BC.TOP&rank._CAT_HISTLT2 B
+;
+QUIT;
+
+PROC SQL; SELECT P1, COUNT(DISTINCT INDIVIDUAL_ID) AS COUNT
+FROM BC.TOP&rank._CAT_HISTLT2 GROUP BY P1;
+QUIT;
+
+/* Scoring 2+ shoppers for all HS categories for brands from Rank 25 to Max_Rank
+based on Correlation Mapping; assigning final factor for category based on highest freqyency 
+for a Factor*/
+
+PROC SQL;
+CREATE TABLE BC.TOP&rank._CAT_HISTGT2_MAX AS
+SELECT
+	DISTINCT 
+			 A.CATEGORY,
+			 A.INDIVIDUAL_ID,
+			 A.P1,
+			 UPCASE(A.BRAND_NAME) AS BRAND_NAME,
+			 A.QTY_PURCHASED,
+			 A.DEMAND_SHIPPED,
+			 F.CLUSTER
+FROM
+	BC.MASTER_CUTB A1
+	JOIN BC.IND_CAT_BRAND_DETAIL_HIST A ON A1.INDIVIDUAL_ID = A.INDIVIDUAL_ID /*History File*/
+	/*JOIN BC.BRAND_CAT_SUMMARY2 B ON A.BRAND_NAME = B.BRAND_NAME    AND A.CATEGORY = B.CATEGORY  /*Top 25 brands by Cat in last 24 months*/
+	JOIN BC.IND_CAT_HIST_SUMMARY C ON A.INDIVIDUAL_ID = C.INDIVIDUAL_ID AND C.CATEGORY = A.CATEGORY  /*Ind Cat Summary based on All History*/
+/*	JOIN BC.MAX_RANK_CAT E ON C.CATEGORY = E.CATEGORY */
+	LEFT JOIN BC.CORRELATION_MASTER F ON C.CATEGORY = F.CATEGORY AND A.BRAND_NAME = F._NAME_
+WHERE
+/*	B.S_NO GT &RANK1.*/
+/*	AND B.S_NO LE E.MAX_RANK*/
+/*	AND */
+	UPCASE(A.BRAND_NAME) NE ' '
+	AND UPCASE(A.BRAND_NAME)  NOT IN ('ZZOBSOLETEBRAND')
+	AND C.QTY_PURCHASED GE 2  /*Cat Brand Summary - unCommented*/
+	AND A.QTY_PURCHASED GT 0		/*Cat Summary*/
+	AND A.P1 NOT IN (4,7,10)
+	AND A.CAT_P1_SUBSTR = A.P1
+ORDER BY
+/*	A.CATEGORY,*/
+	A.INDIVIDUAL_ID,
+	A.P1
+;
+QUIT;
+
+
+
+PROC SQL; 
+CREATE TABLE BC.MASTER_CUTC AS
+SELECT DISTINCT A.INDIVIDUAL_ID FROM  BC.MASTER_CUTB A
+EXCEPT
+SELECT DISTINCT B.INDIVIDUAL_ID FROM BC.TOP&rank._CAT_HISTGT2_MAX B
+;
+QUIT;
+
+PROC SQL; 
+CREATE TABLE BC.MASTER_CUTC AS
+SELECT DISTINCT A.INDIVIDUAL_ID, B.P1
+FROM BC.MASTER_CUTC A
+JOIN BC.IND_CAT_BRAND_DETAIL_HIST B ON A.INDIVIDUAL_ID = B.INDIVIDUAL_ID
+;
+QUIT;
+
+PROC SQL;
+SELECT DISTINCT P1, COUNT(DISTINCT INDIVIDUAL_ID) AS COUNT
+FROM BC.MASTER_CUTC
+GROUP BY P1;
+QUIT;
+
+
+PROC SQL;
+CREATE TABLE BC.TOP&RANK._CAT_HISTGT2_MAX2 AS
+SELECT DISTINCT
+	A.CATEGORY,
+	A.INDIVIDUAL_ID,
+	A.P1,
+	A.CLUSTER,
+	COUNT(DISTINCT A.BRAND_NAME) AS COUNT,
+	SUM(A.QTY_PURCHASED) AS SUM_QTY,
+	SUM(A.DEMAND_SHIPPED) AS SUM_DMD
+FROM
+	BC.TOP&rank._CAT_HISTGT2_MAX A
+GROUP BY
+	A.CATEGORY,
+	A.INDIVIDUAL_ID,
+	A.P1,
+	A.CLUSTER
+ORDER BY
+	A.CATEGORY,
+	A.INDIVIDUAL_ID,
+	A.P1,
+	SUM_DMD DESC
+;
+QUIT;
+
+PROC RANK DATA = BC.TOP&RANK._CAT_HISTGT2_MAX2 OUT = BC.TOP&RANK._CAT_HISTGT2_MAX3 DESCENDING
+TIES = HIGH;
+BY CATEGORY INDIVIDUAL_ID P1;
+VAR SUM_DMD;
+RANKS MAX_CLUSTER;
+RUN;
+
+
+DATA BC.TOP&RANK._CAT_HISTGT2_MAX4A (DROP = COUNT SUM_QTY SUM_DMD);
+SET BC.TOP&RANK._CAT_HISTGT2_MAX3;
+WHERE MAX_CLUSTER = 1;
+RUN;
+
+proc sql; select count(distinct individual_id) from BC.TOP&RANK._CAT_HISTGT2_MAX4a; quit;
+proc sql; select count(distinct individual_id) from BC.TOP&RANK._CAT_HISTGT2_MAX4b; quit;
+
+
+PROC SQL;
+CREATE TABLE BC.TOP&RANK._CAT_HISTGT2_MAX4B AS
+SELECT DISTINCT A.CATEGORY, A.INDIVIDUAL_ID, A.P1 FROM BC.TOP&RANK._CAT_HISTGT2_MAX3 A
+EXCEPT
+SELECT DISTINCT B.CATEGORY, B.INDIVIDUAL_ID, B.P1 FROM BC.TOP&RANK._CAT_HISTGT2_MAX4A B
+;
+QUIT;
+
+DATA BC.TOP&RANK._CAT_HISTGT2_MAX4B;
+SET BC.TOP&RANK._CAT_HISTGT2_MAX4B;
+FORMAT CLUSTER $10.;
+CLUSTER = 'Factor01';
+Run;
+
+DATA BC.TOP&RANK._CAT_HISTGT2_MAX4 (drop = MAX_CLUSTER);
+SET BC.TOP&RANK._CAT_HISTGT2_MAX4A
+	BC.TOP&RANK._CAT_HISTGT2_MAX4B
+	;
+	RUN;
+
+PROC SQL; CREATE TABLE BC.TOP&RANK._CAT_HISTGT2_MAX4 AS SELECT DISTINCT * FROM BC.TOP&RANK._CAT_HISTGT2_MAX4; QUIT;
+
+PROC SQL; SELECT  COUNT(DISTINCT INDIVIDUAL_ID) AS COUNT
+FROM BC.TOP&RANK._CAT_HISTGT2_MAX4 ;
+QUIT;
+
+PROC SQL; SELECT P1,CLUSTER, COUNT(DISTINCT INDIVIDUAL_ID) AS COUNT
+FROM BC.TOP&RANK._CAT_HISTGT2_MAX4 GROUP BY P1, CLUSTER;
+QUIT;
+
+/*LEFTOVERS*/
+
+
+PROC SQL;
+CREATE TABLE BC.TOP&rank._CAT_LEFTOVER AS
+SELECT
+	DISTINCT 
+			 A.CATEGORY,
+			 A.INDIVIDUAL_ID,
+			 A.P1,
+			 UPCASE(A.BRAND_NAME) AS BRAND_NAME,
+			 A.QTY_PURCHASED,
+			 A.DEMAND_SHIPPED,
+			 F.CLUSTER
+FROM
+	BC.MASTER_CUTC A1
+	LEFT JOIN BC.IND_CAT_BRAND_DETAIL_HIST A ON A1.INDIVIDUAL_ID = A.INDIVIDUAL_ID /*History File*/
+	/*JOIN BC.BRAND_CAT_SUMMARY2 B ON A.BRAND_NAME = B.BRAND_NAME    AND A.CATEGORY = B.CATEGORY  /*Top 25 brands by Cat in last 24 months*/
+	LEFT JOIN BC.IND_CAT_HIST_SUMMARY C ON A.INDIVIDUAL_ID = C.INDIVIDUAL_ID AND C.CATEGORY = A.CATEGORY  /*Ind Cat Summary based on All History*/
+/*	JOIN BC.MAX_RANK_CAT E ON C.CATEGORY = E.CATEGORY */
+	LEFT JOIN BC.CORRELATION_MASTER F ON C.CATEGORY = F.CATEGORY AND A.BRAND_NAME = F._NAME_
+WHERE
+/*	B.S_NO GT &RANK1.*/
+/*	AND B.S_NO LE E.MAX_RANK*/
+/*	AND */
+/*	UPCASE(A.BRAND_NAME) NE ' '*/
+/*	AND UPCASE(A.BRAND_NAME)  NOT IN ('ZZOBSOLETEBRAND')*/
+/*	AND C.QTY_PURCHASED GE 2  /*Cat Brand Summary - unCommented*/
+/*	AND A.QTY_PURCHASED GT 0		/*Cat Summary*/
+/*	AND */
+	A.P1 NOT IN (4,7,10)
+	AND A.CAT_P1_SUBSTR = A.P1
+ORDER BY
+/*	A.CATEGORY,*/
+	A.INDIVIDUAL_ID,
+	A.P1
+;
+QUIT;
+
+PROC SQL; 
+CREATE TABLE BC.MASTER_CUTD AS
+SELECT DISTINCT A.INDIVIDUAL_ID FROM  BC.MASTER_CUTC A
+EXCEPT
+SELECT DISTINCT B.INDIVIDUAL_ID FROM BC.TOP&rank._CAT_LEFTOVER B
+;
+QUIT;
+
+
+PROC SQL; 
+CREATE TABLE BC.MASTER_CUTD AS
+SELECT DISTINCT A.INDIVIDUAL_ID, B.P1
+FROM BC.MASTER_CUTD A
+JOIN BC.IND_CAT_BRAND_DETAIL_HIST B ON A.INDIVIDUAL_ID = B.INDIVIDUAL_ID
+;
+QUIT;
+
+PROC SQL;
+SELECT DISTINCT P1, COUNT(DISTINCT INDIVIDUAL_ID) AS COUNT
+FROM BC.MASTER_CUTD
+GROUP BY P1;
+QUIT;
+
+
+/*Predominantly Contemp.*/
+/*These Individuals have no Net Sales or have no brand name information*/
+
+/*MASTER SCORING*/
+
+DATA BC.TOP&rank._CAT_HIST_8A (keep = CATEGORY INDIVIDUAL_ID P1 CLUSTER);
+SET
+	BC.TOP&rank._CAT_HIST_7
+	BC.TOP&RANK._CAT_HISTGT2_MAX4
+	BC.TOP&rank._CAT_HISTLT2
+;
+RUN;
+
+/*check*/
+PROC SORT DATA = BC.TOP&rank._CAT_HISTLT2; BY INDIVIDUAL_ID; RUN;
+PROC SORT DATA = BC.TOP&rank._CAT_HIST_7; BY INDIVIDUAL_ID; RUN;
+PROC SORT DATA = BC.TOP&RANK._CAT_HISTGT2_MAX4; BY INDIVIDUAL_ID; RUN;
+
+DATA BC.TOP&rank._CAT_HIST_8B (keep =  CATEGORY INDIVIDUAL_ID P1 CLUSTER);
+MERGE
+	BC.TOP&rank._CAT_HIST_7 (IN=A)
+	BC.TOP&RANK._CAT_HISTGT2_MAX4 (IN=B)
+	BC.TOP&rank._CAT_HISTLT2 (IN=C)
+;
+BY INDIVIDUAL_ID;
+IF (A AND B)  ; 
+/*0*/
+/*IF (C AND B)  ; */
+/*0*/
+/*IF (C AND A)  ; */
+/*0*/
+RUN;
+
+proc sql;
+create table bc.master_score_summary as
+select category, p1, cluster, count(distinct individual_id) as count
+from BC.TOP&rank._CAT_HIST_8A
+group by category, p1, cluster;
+quit;
+
+/*sample for CM 8/25/2013*/
+
+PROC SORT DATA = BC.TOP&rank._CAT_HIST_8A; BY INDIVIDUAL_ID P1; RUN;
+PROC SORT DATA = SAKS.Cm_shoes_handbags_file_UNIQ; BY INDIVIDUAL_ID P1; RUN;
+
+DATA BC.TOP&rank._CAT_HIST_8A(RENAME=(P1=P1_C));
+SET BC.TOP&rank._CAT_HIST_8A;
+RUN;
+
+DATA SAKS.Cm_shoes_handbags_file_UNIQ;
+SET SAKS.Cm_shoes_handbags_file_UNIQ;
+IF P1 IN (81,82) THEN P1_C=8;
+ELSE IF P1 NOT IN (81,82) THEN P1_C=P1;
+RUN;
+
+
+PROC SORT DATA = BC.TOP&rank._CAT_HIST_8A; BY INDIVIDUAL_ID P1_C; RUN;
+PROC SORT DATA = SAKS.Cm_shoes_handbags_file_UNIQ; BY INDIVIDUAL_ID P1_C; RUN;
+DATA BC.TOP&rank._CAT_HIST_8C (KEEP = INDIVIDUAL_ID EMAIL_ADDRESS P2_CSFLAG P3_CSFLAG P1  P2 P3 CLUSTER);
+MERGE BC.TOP&rank._CAT_HIST_8A (IN=A) 
+	  SAKS.Cm_shoes_handbags_file_UNIQ (IN=B);
+IF B;
+BY INDIVIDUAL_ID P1_C  ;
+RUN;
+
+data BC.TOP&rank._CAT_HIST_8E;
+set  BC.TOP&rank._CAT_HIST_8C;
+if Cluster = 'Factor01' then HyperCluster = 1;
+else if Cluster = 'Factor02' then HyperCluster = 2;
+else if Cluster = 'Factor03' then HyperCluster = 3;
+else HyperCluster = ' ';
+keep email_address P1 P2 P3 P2_csflag P3_csflag HyperCluster; 
+output;
+run;
+
+proc sql;
+select 
+	count(*) as obs,
+	count(distinct email_address) as emls,
+	count(p1) as p1s,
+	count(p2) as p2s,
+	count(p3) as p3s,
+	count(HyperCluster) as h1
+from
+	BC.TOP&rank._CAT_HIST_8E;
+quit;
+
+data BC.TOP&rank._CAT_HIST_8E_R;
+retain P2_csflag	P3_csflag	P1	P2	P3	EMAIL_ADDRESS	HyperCluster;
+set BC.TOP&rank._CAT_HIST_8E;
+run;
+
+
+proc sort data= BC.TOP&rank._CAT_HIST_8E; by P1	P2	P3 P2_csflag P3_csflag EMAIL_ADDRESS;run;
+
+
