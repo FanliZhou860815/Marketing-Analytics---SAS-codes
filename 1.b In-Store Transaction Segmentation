@@ -1,0 +1,699 @@
+proc sql;
+CONNECT TO TERADATA as db (USER='fanlizhou' PASSWORD='******' mode=teradata  SERVER=ncr_10 );
+CREATE TABLE omni.SAKS_FL_TTL AS
+select * from connection to db
+	( 
+		 
+	SELECT 
+			UPPER(EMAIL_ADDR_TXT) AS EMAIL_ADDRESS,
+			SUM( ORDERS ) AS ORDERS,
+			SUM( FL_NETSALES) AS FL_NETSALES
+	FROM 
+		(SELECT 
+			MKTG_IND_ID ,
+			COUNT(DISTINCT SALES_TRAN_ID) AS ORDERS
+		FROM SVC_SAS_VIEWS.MI_SALES 
+		WHERE SECTOR_CD='SFA' AND SALES_LINE_ITEM_TYPE_CD='SL' 
+		GROUP BY MKTG_IND_ID) ORD 
+		INNER JOIN 
+		(SELECT 
+			MKTG_IND_ID,
+			SUM(UNIT_SELL_PRC_AMT) AS FL_NETSALES
+		FROM			
+			SVC_SAS_views.MI_SALES
+		WHERE 
+			MKTG_IND_ID <> 0
+			AND MKTG_IND_ID <> 999
+			AND SECTOR_CD IN  ('SFA')
+			AND UNIT_SELL_PRC_AMT >0
+			AND (ORIG_STORE_NUM IS NULL OR ORIG_STORE_NUM <> 689)  
+		GROUP BY MKTG_IND_ID) NS ON ORD.MKTG_IND_ID=NS.MKTG_IND_ID
+		INNER JOIN (SELECT MKTG_IND_ID, EMAIL_ADDR_TXT FROM SVC_SAS_views.MI_NAME_ADDRESS) NM ON ORD.MKTG_IND_ID=NM.MKTG_IND_ID
+	GROUP BY 
+				EMAIL_ADDR_TXT	 
+	);
+Disconnect from db;
+Quit;
+/*      real time           1:10.18*/
+/*      cpu time            7.34 seconds*/
+/*      real time           6:36.47*/
+/*      cpu time            7.14 seconds*/
+
+
+
+
+proc sql;
+CONNECT TO TERADATA as db (USER='fanlizhou' PASSWORD='Apple123' mode=teradata  SERVER=ncr_10 );
+
+execute
+(
+	 CREATE MULTISET VOLATILE TABLE GROUP_CAT_MAP AS ( 
+		select 
+			DISTINCT 
+			GRP_CD ,
+			(CASE 
+				WHEN GRP_CD=	10	THEN 'CAT1'
+				WHEN GRP_CD=	16	THEN 'CAT1'
+				WHEN GRP_CD=	20	THEN 'CAT1'
+				WHEN GRP_CD=	22	THEN 'CAT1'
+				WHEN GRP_CD=	23	THEN 'CAT1'
+				WHEN GRP_CD=	24	THEN 'CAT1'
+				WHEN GRP_CD=	9	THEN 'SJ'
+				WHEN GRP_CD=	25	THEN 'CAT2'
+				WHEN GRP_CD=	15	THEN 'CAT3'
+				WHEN GRP_CD=	36	THEN 'CAT4'
+				WHEN GRP_CD=	39	THEN 'CAT5'
+				WHEN GRP_CD=	13	THEN 'CAT6'
+				WHEN GRP_CD=	18	THEN 'CAT6'
+				WHEN GRP_CD=	55	THEN 'CAT6'
+				WHEN GRP_CD=	19	THEN 'CAT7'
+				WHEN GRP_CD=	28	THEN 'CAT8'
+				WHEN GRP_CD=	29	THEN 'CAT8'
+				WHEN GRP_CD=	5	THEN 'CAT9'
+				WHEN GRP_CD=	30	THEN 'CAT9'
+				WHEN GRP_CD=	31	THEN 'CAT9'
+				WHEN GRP_CD=	33	THEN 'CAT9'
+				WHEN GRP_CD=	34	THEN 'CAT9'
+				WHEN GRP_CD=	62	THEN 'CAT9'
+				WHEN GRP_CD=	63	THEN 'CAT9'
+				WHEN GRP_CD=	64	THEN 'CAT9'
+				WHEN GRP_CD=	66	THEN 'CAT9'
+				WHEN GRP_CD=	35	THEN 'CAT10'
+				WHEN GRP_CD=	27	THEN 'CAT11'
+				WHEN GRP_CD=	65	THEN 'CAT11'
+				WHEN GRP_CD=	38	THEN 'CAT11'
+				WHEN GRP_CD=	35	THEN 'CAT10'
+				WHEN GRP_CD=	27	THEN 'CAT11'
+				WHEN GRP_CD=	65	THEN 'CAT11'
+				WHEN GRP_CD=	38	THEN 'CAT11'
+				WHEN GRP_CD=	8	THEN 'SZ'
+				WHEN GRP_CD=	7	THEN 'CAT12'
+				WHEN GRP_CD=	11	THEN 'CAT12'
+				WHEN GRP_CD=	14	THEN 'CAT12'
+				WHEN GRP_CD=	60	THEN 'CAT12'
+				WHEN GRP_CD=	37	THEN 'CAT12' END ) AS CAT
+				
+		 FROM SVC_SAS_VIEWS.ITEM 
+	
+	 )
+	 WITH DATA NO PRIMARY INDEX
+	 ON COMMIT PRESERVE ROWS
+)
+by db;
+
+
+
+
+CREATE TABLE omni.SAKS_FL_ORDERS AS
+select * from connection to db
+(
+SELECT  
+		UPPER(EML.EMAIL_ADDR_TXT) as email_address,
+		C. CAT,
+		SUM(A.UNIT_SELL_PRC_AMT) AS NETSALES,
+		SUM(A.ITEM_QTY) AS ITEMS
+FROM
+	(SELECT
+		MKTG_IND_ID,
+		SALES_TRAN_ID,
+		DEPT_CD, 
+		CLASS_CD,
+		SALES_LINE_ITEM_TYPE_CD,
+		(CASE WHEN SALES_LINE_ITEM_TYPE_CD='RTN' THEN ITEM_QTY*-1 
+			  WHEN SALES_LINE_ITEM_TYPE_CD='SL' THEN ITEM_QTY END) AS ITEM_QTY,
+		UNIT_SELL_PRC_AMT
+	FROM
+		SVC_SAS_VIEWS.MI_SALES
+	WHERE
+		MKTG_IND_ID <> 0
+		AND MKTG_IND_ID <> 999
+		AND SECTOR_CD IN  ('SFA')
+		AND (ORIG_STORE_NUM IS NULL OR ORIG_STORE_NUM <> 689) ) A 
+	INNER JOIN
+		(SELECT DISTINCT DEPT_CD, GRP_CD, CLASS_CD  FROM SVC_SAS_VIEWS.ITEM ) B  
+		 ON A.CLASS_CD=B.CLASS_CD AND A.DEPT_CD=B.DEPT_CD
+	INNER JOIN 
+		GROUP_CAT_MAP C ON B.GRP_CD= C.GRP_CD
+	INNER JOIN 
+		(SELECT MKTG_IND_ID, EMAIL_ADDR_TXT FROM SVC_SAS_VIEWS.MI_NAME_ADDRESS) EML ON A.MKTG_IND_ID=EML.MKTG_IND_ID
+GROUP BY 
+	EMAIL_ADDR_TXT, CAT
+	);
+Disconnect from db;
+Quit;
+
+/*      real time           1:16.79*/
+/*      cpu time            25.94 seconds*/
+/*      real time           28:33.93*/
+/*      cpu time            19.07 seconds*/
+
+
+
+
+
+DATA EML_CAT_ITEMS(KEEP=EMAIL_ADDRESS CAT_ITEMS ITEMS)
+	 EML_CAT_NETSALES(KEEP=EMAIL_ADDRESS CAT_NETSALES NETSALES); 
+SET OMNI.SAKS_FL_ORDERS (WHERE =(EMAIL_ADDRESS IS NOT NULL));
+CAT_ITEMS=COMPRESS(CAT)||("_ITEMS");
+CAT_NETSALES=COMPRESS(CAT)||("_NETSALES");
+RUN;
+
+PROC SORT DATA=EML_CAT_ITEMS; BY EMAIL_ADDRESS;RUN;
+PROC TRANSPOSE DATA =EML_CAT_ITEMS out = EML_CAT_ITEMS_T ; 
+	ID CAT_ITEMS;
+	BY EMAIL_ADDRESS;
+	VAR ITEMS ;
+RUN;
+
+PROC SORT DATA=EML_CAT_NETSALES; BY EMAIL_ADDRESS;RUN;
+PROC TRANSPOSE DATA =EML_CAT_NETSALES out = EML_CAT_NETSALES_T ; 
+	ID CAT_NETSALES;
+	BY EMAIL_ADDRESS;
+	VAR NETSALES ;
+RUN;
+
+PROC SORT DATA=OMNI.SAKS_FL_TTL; BY EMAIL_ADDRESS;RUN;
+DATA OMNI.EML_CAT_TTL (DROP=_NAME_ _LABEL_);MERGE OMNI.SAKS_FL_TTL(IN=A)
+	  EML_CAT_ITEMS_T (IN=B)
+	  EML_CAT_NETSALES_T (IN=C);
+BY  EMAIL_ADDRESS;
+IF A OR B OR C;
+WHERE EMAIL_ADDRESS IS NOT NULL;
+RUN;
+
+
+PROC CONTENTS DATA=OMNI.EML_CAT_TTL OUT=OMNI.EML_CAT_TTL_COLUMN; RUN;
+PROC SQL; SELECT NAME INTO: NAME_F  FROM OMNI.EML_CAT_TTL_COLUMN WHERE VARNUM=2;QUIT;
+PROC SQL; SELECT NAME INTO: NAME_L FROM OMNI.EML_CAT_TTL_COLUMN WHERE VARNUM IN (SELECT MAX(VARNUM) FROM OMNI.EML_CAT_TTL_COLUMN);QUIT;
+
+
+DATA OMNI.EML_CAT_TTL_T ;
+SET  OMNI.EML_CAT_TTL ;
+array testmiss(*) &NAME_F.--&NAME_L.;
+  do i = 1 to dim(testmiss);                                              
+    if testmiss(i)=. then testmiss(i)=0;
+END;
+RUN;
+
+/*add SZ_FLAG*/
+proc sql;
+create table OMNI.EML_CAT_TTL_T as
+select *, 
+	(CASE WHEN SZ_ITEMS=0 THEN 0 ELSE 1 END) AS sz_flag
+from OMNI.EML_CAT_TTL_T ;
+quit;
+
+
+
+data OMNI.EML_CAT_TTL_1 ;
+SET  OMNI.EML_CAT_TTL_T (RENAME=(FL_NETSALES=NETSALES));
+by EMAIL_ADDRESS ;
+format cat_pref1 $20.;
+if NETSALES gt 0 then do;
+		cat1_pc=cat1_NETSALES/NETSALES;
+		sj_pc=sj_NETSALES/NETSALES;
+		cat2_pc=cat2_NETSALES/NETSALES;
+		cat3_pc=cat3_NETSALES/NETSALES;
+		cat4_pc=cat4_NETSALES/NETSALES;
+		cat5_pc=cat5_NETSALES/NETSALES;
+		cat6_pc=cat6_NETSALES/NETSALES;
+		cat7_pc=cat7_NETSALES/NETSALES;
+		cat8_pc=cat8_NETSALES/NETSALES;
+		cat9_pc=cat9_NETSALES/NETSALES;
+		cat10_pc=cat10_NETSALES/NETSALES;
+		cat11_pc=cat11_NETSALES/NETSALES;
+		sz_pc=sz_NETSALES/NETSALES;
+
+		/* calculates for higher than median */
+/*		Benchmarks for each category updated after every fiscal year ends*/
+		if cat1_NETSALES gt 575 and cat1_ITEMS gt 1 then do;
+			aff=1;
+			count+1;
+		end;
+		if sj_NETSALES gt 485 and sj_ITEMS gt 1 then do;
+			aff=13;
+			count+1;
+		end;
+		if cat2_NETSALES gt 219 and cat2_ITEMS gt 1 then do;
+			aff=2;
+			count+1;
+		end;
+		if cat3_NETSALES gt 214 and cat3_ITEMS gt 1 then do;
+			aff=3;
+			count+1;
+		end;
+		if cat4_NETSALES gt 290 and cat4_ITEMS gt 1 then do;
+			aff=4;
+			count+1;
+		end;
+		if cat5_NETSALES gt 315 and cat5_ITEMS gt 1 then do;
+			aff=5;
+			count+1;
+		end;
+		if cat6_NETSALES gt 180 and cat6_ITEMS gt 1 then do;
+			aff=6;
+			count+1;
+		end;
+		if cat7_NETSALES gt 130 and cat7_ITEMS gt 1 then do;
+			aff=7;
+			count+1;
+		end;
+		if cat8_NETSALES gt 105 and cat8_ITEMS gt 2 then do;
+			aff=8;
+			count+1;
+		end;
+		if cat9_NETSALES gt 172 and cat9_ITEMS gt 1 then do;
+			aff=9;
+			count+1;
+		end;
+		if cat10_NETSALES gt 94 and cat10_ITEMS gt 1 then do;
+			aff=10;
+			count+1;
+		end;
+		if cat11_NETSALES gt 74 and cat11_ITEMS gt 1 then do;
+			aff=11;
+			count+1;
+		end;
+
+		if sz_NETSALES gt 276 and sz_ITEMS gt 2 then do;
+			aff=12;
+			count+1;
+		end;
+
+		if count gt 1 then do;
+			if cat1_pc gt pc then do; pc=cat1_pc; aff=1; end; /* combining designer & sj */
+	  		if sj_pc   gt pc then do; pc=sj_pc;   aff=1; end;  
+			if cat2_pc gt pc then do; pc=cat2_pc; aff=2; end;
+			if cat3_pc gt pc then do; pc=cat3_pc; aff=3; end;
+			if cat4_pc gt pc then do; pc=cat4_pc; aff=4; end; /* combining shoes & handbags */
+			if cat5_pc gt pc then do; pc=cat5_pc; aff=5; end; /*Change for S&H Split*/
+			if cat6_pc gt pc then do; pc=cat6_pc; aff=6; end;
+			if cat7_pc gt pc then do; pc=cat7_pc; aff=6; end; /* combining jewelry and access */
+			if cat8_pc gt pc then do; pc=cat8_pc; aff=8; end;
+			if cat9_pc gt pc then do; pc=cat9_pc; aff=9; end;
+			if cat10_pc gt pc then do; pc=cat10_pc; aff=10; end;
+			if cat11_pc gt pc then do; pc=cat11_pc; aff=11; end;
+			if sz_pc gt pc then do; pc=sz_pc; aff=12; end;
+		end;	
+
+		if aff = 0 and orders = 1 then do;
+			pc=0;
+			if cat1_pc gt pc then do; pc=cat1_pc; aff=1; end;
+			if sj_pc gt pc   then do; pc=sj_pc;   aff=1; end;  /*Combining St John into Cat 1*/
+			if cat2_pc gt pc then do; pc=cat2_pc; aff=2; end;
+			if cat3_pc gt pc then do; pc=cat3_pc; aff=3; end;
+			if cat4_pc gt pc then do; pc=cat4_pc; aff=4; end;
+			if cat5_pc gt pc then do; pc=cat5_pc; aff=5; end;/*Change for S&H Split*/
+			if cat6_pc gt pc then do; pc=cat6_pc; aff=6; end;
+			if cat7_pc gt pc then do; pc=cat7_pc; aff=6; end;
+			if cat8_pc gt pc then do; pc=cat8_pc; aff=8; end;
+			if cat9_pc gt pc then do; pc=cat9_pc; aff=9; end;
+			if cat10_pc gt pc then do; pc=cat10_pc; aff=10; end;
+			if cat11_pc gt pc then do; pc=cat11_pc; aff=11; end;
+			if sz_pc gt pc then do; pc=sz_pc; aff=12; end;
+		end;	
+
+		if aff = 0 and orders gt 1 then do;
+			ITEMS=0;
+			if cat1_ITEMS gt ITEMS then do; ITEMS=cat1_ITEMS; aff=1; end;
+			if sj_ITEMS   gt ITEMS then do; ITEMS=sj_ITEMS;   aff=1; end;  /*Combining St John into Cat 1*/
+			if cat2_ITEMS gt ITEMS then do; ITEMS=cat2_ITEMS; aff=2; end;
+			if cat3_ITEMS gt ITEMS then do; ITEMS=cat3_ITEMS; aff=3; end;
+			if cat4_ITEMS gt ITEMS then do; ITEMS=cat4_ITEMS; aff=4; end;
+			if cat5_ITEMS gt ITEMS then do; ITEMS=cat5_ITEMS; aff=5; end;/*Change for S&H Split*/
+			if cat6_ITEMS gt ITEMS then do; ITEMS=cat6_ITEMS; aff=6; end;
+			if cat7_ITEMS gt ITEMS then do; ITEMS=cat7_ITEMS; aff=6; end;
+			if cat8_ITEMS gt ITEMS then do; ITEMS=cat8_ITEMS; aff=8; end;
+			if cat9_ITEMS gt ITEMS then do; ITEMS=cat9_ITEMS; aff=9; end;
+			if cat10_ITEMS gt ITEMS then do; ITEMS=cat10_ITEMS; aff=10; end;
+			if cat11_ITEMS gt ITEMS then do; ITEMS=cat11_ITEMS; aff=11; end;
+			if sz_ITEMS gt ITEMS then do; ITEMS=sz_ITEMS; aff=12; end;
+
+		end;	
+
+		if aff gt 0 then do;
+			if aff=1 then cat_pref1='Designer';
+			if aff=13 then cat_pref1='Designer';
+			if aff=2 then cat_pref1='Contemp';
+			if aff=3 then cat_pref1='Wear';
+			if aff=4 then cat_pref1='Shoes';
+			if aff=5 then cat_pref1='Handbags';
+			if aff=6 then cat_pref1='Jewelry & Access';
+			if aff=7 then cat_pref1='Jewelry & Access';
+			if aff=8 then cat_pref1='Beauty & Fragrance';
+			if aff=9 then cat_pref1='Mens';
+			if aff=10 then cat_pref1='Kids';
+			if aff=11 then cat_pref1='Home/Gourmet/Gifts';
+			if aff=12 then cat_pref1='Salon Z';
+		end;
+	end;
+	if aff=0 or aff = . then cat_pref1='Contemp'; /*assigns preference to all other women's apparel and net sales = $0 */
+
+	keep 	EMAIL_ADDRESS
+			cat1_pc
+			sj_pc
+			cat2_pc
+			cat3_pc
+			cat4_pc
+			cat5_pc
+			cat6_pc
+			cat7_pc
+			cat8_pc
+			cat9_pc
+			cat10_pc
+			cat11_pc
+			sz_pc
+			sz_flag
+			cat_pref1;
+			output;
+run;
+
+data OMNI.EML_CAT_TTL_2;
+set OMNI.EML_CAT_TTL_1;
+by EMAIL_ADDRESS;
+format cat_pref2 $20.;
+	pc=.;
+	pc+0;
+
+if cat_pref1 in ('Designer') then do; cat1_pc=0; sj_pc=0; end;
+if cat_pref1='Contemp' then cat2_pc=0;
+if cat_pref1='Wear' then cat3_pc=0;
+if cat_pref1 in ('Shoes','Handbags') then do; cat4_pc=0; cat5_pc=0; end;/*Shoes&handbags Split Question*/
+if cat_pref1 in ('Jewelry & Access') then do; cat6_pc=0; cat7_pc=0; end;
+if cat_pref1='Beauty & Fragrance' then cat8_pc=0;
+if cat_pref1='Mens' then cat9_pc=0;
+if cat_pref1='Kids' then cat10_pc=0;
+if cat_pref1='Home/Gourmet/Gifts' then cat11_pc=0;
+if cat_pref1='Salon Z' then sz_pc=0;
+
+if cat1_pc gt pc then do; pc=cat1_pc; aff=1; end;
+if sj_pc   gt pc then do; pc=sj_pc;   aff=1; end;
+if cat2_pc gt pc then do; pc=cat2_pc; aff=2; end;
+if cat3_pc gt pc then do; pc=cat3_pc; aff=3; end;
+if cat4_pc gt pc then do; pc=cat4_pc; aff=4; end;
+if cat5_pc gt pc then do; pc=cat5_pc; aff=5; end;/*Split Shoes&Handbags*/
+if cat6_pc gt pc then do; pc=cat6_pc; aff=6; end;
+if cat7_pc gt pc then do; pc=cat7_pc; aff=6; end;
+if cat8_pc gt pc then do; pc=cat8_pc; aff=8; end;
+if cat9_pc gt pc then do; pc=cat9_pc; aff=9; end;
+if cat10_pc gt pc then do; pc=cat10_pc; aff=10; end;
+if cat11_pc gt pc then do; pc=cat11_pc; aff=11; end;
+if sz_pc gt pc then do; pc=sz_pc; aff=12; end;
+
+if aff gt 0 then do;
+	if aff=1 then cat_pref2='Designer';
+
+	if aff=2 then cat_pref2='Contemp';
+	if aff=3 then cat_pref2='Wear';
+	if aff=4 then cat_pref2='Shoes';
+	if aff=5 then cat_pref2='Handbags';/*Split Shoes&Handbags*/
+	if aff=6 then cat_pref2='Jewelry & Access';
+
+	if aff=8 then cat_pref2='Beauty & Fragrance';
+	if aff=9 then cat_pref2='Mens';
+	if aff=10 then cat_pref2='Kids';
+	if aff=11 then cat_pref2='Home/Gourmet/Gifts';
+	if aff=12 then cat_pref2='Salon Z';
+end;
+	keep EMAIL_ADDRESS 	
+		cat1_pc
+		cat2_pc
+		cat3_pc
+		cat4_pc
+		cat5_pc
+		cat6_pc
+		cat7_pc
+		cat8_pc
+		cat9_pc
+		cat10_pc
+		cat11_pc
+		sj_pc
+		sz_pc
+		sz_flag
+		cat_pref1
+		cat_pref2;
+run;
+/*Done*/
+
+
+data OMNI.EML_CAT_TTL_3;
+set OMNI.EML_CAT_TTL_2;
+by EMAIL_ADDRESS;
+	format cat_pref3 $20.;
+	pc=.;
+	pc+0;
+if cat_pref2 in ('Designer') then do; cat1_pc=0; sj_pc=0; end;
+if cat_pref2='Contemp' then cat2_pc=0;
+if cat_pref2='Wear' then cat3_pc=0;
+if cat_pref2 in ('Shoes','Handbags') then do; cat4_pc=0; cat5_pc=0; end;/*Split Shoes&Handbags Question*/
+if cat_pref2='Jewelry & Access' then cat6_pc=0;
+if cat_pref2='Jewelry & Access' then cat7_pc=0;
+if cat_pref2='Beauty & Fragrance' then cat8_pc=0;
+if cat_pref2='Mens' then cat9_pc=0;
+if cat_pref2='Kids' then cat10_pc=0;
+if cat_pref2='Home/Gourmet/Gifts' then cat11_pc=0;
+/*if cat_pref2='St John' then sj_pc=0;*/
+if cat_pref2='Salon Z' then sz_pc=0;
+
+if cat1_pc gt pc then do; pc=cat1_pc; aff=1; end;
+if sj_pc   gt pc then do; pc=sj_pc;   aff=1; end;
+if cat2_pc gt pc then do; pc=cat2_pc; aff=2; end;
+if cat3_pc gt pc then do; pc=cat3_pc; aff=3; end;
+if cat4_pc gt pc then do; pc=cat4_pc; aff=4; end;
+if cat5_pc gt pc then do; pc=cat5_pc; aff=5; end;/*Split Shoes&Handbags Question*/
+if cat6_pc gt pc then do; pc=cat6_pc; aff=6; end;
+if cat7_pc gt pc then do; pc=cat7_pc; aff=6; end;
+if cat8_pc gt pc then do; pc=cat8_pc; aff=8; end;
+if cat9_pc gt pc then do; pc=cat9_pc; aff=9; end;
+if cat10_pc gt pc then do; pc=cat10_pc; aff=10; end;
+if cat11_pc gt pc then do; pc=cat11_pc; aff=11; end;
+/*if sj_pc gt pc then do; pc=sj_pc; aff=12; end;*/
+if sz_pc gt pc then do; pc=sz_pc; aff=12; end;
+
+if aff gt 0 then do;
+	if aff=1 then cat_pref3='Designer';
+	if aff=2 then cat_pref3='Contemp';
+	if aff=3 then cat_pref3='Wear';
+	if aff=4 then cat_pref3='Shoes';
+	if aff=5 then cat_pref3='Handbags';/*Split Shoes&Handbags*/
+	if aff=6 then cat_pref3='Jewelry & Access';
+	if aff=8 then cat_pref3='Beauty & Fragrance';
+	if aff=9 then cat_pref3='Mens';
+	if aff=10 then cat_pref3='Kids';
+	if aff=11 then cat_pref3='Home/Gourmet/Gifts';
+
+	if aff=12 then cat_pref3='Salon Z';
+end;
+	keep EMAIL_ADDRESS 	
+		cat1_pc
+		cat2_pc
+		cat3_pc
+		cat4_pc
+		cat5_pc
+		cat6_pc
+		cat7_pc
+		cat8_pc
+		cat9_pc
+		cat10_pc
+		cat11_pc
+		sj_pc
+		sz_pc
+		sz_flag
+		cat_pref1
+		cat_pref2
+		cat_pref3;
+run;
+/*Done*/
+
+data OMNI.EML_CAT_TTL_4;
+set OMNI.EML_CAT_TTL_3;
+by EMAIL_ADDRESS;
+
+	format cat_pref4 $20.;
+	pc=.;
+	pc+0;
+if cat_pref3 in ('Designer') then do; cat1_pc=0; sj_pc=0;end;
+if cat_pref3='Contemp' then cat2_pc=0;
+if cat_pref3='Wear' then cat3_pc=0;
+if cat_pref3 in ('Shoes','Handbags') then do; cat4_pc=0; cat5_pc=0; end;/*Shoes&Handbags Splitting Question*/
+if cat_pref3='Jewelry & Access' then cat6_pc=0;
+if cat_pref3='Jewelry & Access' then cat7_pc=0;
+if cat_pref3='Beauty & Fragrance' then cat8_pc=0;
+if cat_pref3='Mens' then cat9_pc=0;
+if cat_pref3='Kids' then cat10_pc=0;
+if cat_pref3='Home/Gourmet/Gifts' then cat11_pc=0;
+if cat_pref3='Salon Z' then sz_pc=0;
+
+if cat1_pc gt pc then do; pc=cat1_pc; aff=1; end;
+if sj_pc   gt pc then do; pc=sj_pc;   aff=1; end;
+if cat2_pc gt pc then do; pc=cat2_pc; aff=2; end;
+if cat3_pc gt pc then do; pc=cat3_pc; aff=3; end;
+if cat4_pc gt pc then do; pc=cat4_pc; aff=4; end;
+if cat5_pc gt pc then do; pc=cat5_pc; aff=5; end;/*Shoes&Handbags Splitting*/
+if cat6_pc gt pc then do; pc=cat6_pc; aff=6; end;
+if cat7_pc gt pc then do; pc=cat7_pc; aff=6; end;
+if cat8_pc gt pc then do; pc=cat8_pc; aff=8; end;
+if cat9_pc gt pc then do; pc=cat9_pc; aff=9; end;
+if cat10_pc gt pc then do; pc=cat10_pc; aff=10; end;
+if cat11_pc gt pc then do; pc=cat11_pc; aff=11; end;
+if sz_pc gt pc then do; pc=sz_pc; aff=12; end;
+
+if aff gt 0 then do;
+	if aff=1 then cat_pref4='Designer';
+
+	if aff=2 then cat_pref4='Contemp';
+	if aff=3 then cat_pref4='Wear';
+	if aff=4 then cat_pref4='Shoes';
+	if aff=5 then cat_pref4='Handbags';/*Shoes&Handbags Splitting*/
+	if aff=6 then cat_pref4='Jewelry & Access';
+	/*if aff=7 then cat_pref4='Accessories';*/
+	if aff=8 then cat_pref4='Beauty & Fragrance';
+	if aff=9 then cat_pref4='Mens';
+	if aff=10 then cat_pref4='Kids';
+	if aff=11 then cat_pref4='Home/Gourmet/Gifts';
+/*	if aff=12 then cat_pref4='St John';*/
+	if aff=12 then cat_pref4='Salon Z';
+end;
+	if sz_flag=1 and cat_pref1 ne 'Salon Z' and cat_pref2 ne 'Salon Z' and cat_pref3 ne 'Salon Z'
+		then DO; cat_pref3='Salon Z'; END;/* forces customers with salon Z demend but no preference to receive a salon z mailing*/
+	keep EMAIL_ADDRESS 	
+		cat_pref1
+		cat_pref2
+		cat_pref3
+		cat_pref4;
+run;
+/*Done*/
+
+data OMNI.cust_preference_cross_sjnew_fl;
+set OMNI.EML_CAT_TTL_4;
+by EMAIL_ADDRESS;
+where cat_pref1 ne ''; /* there are nulls due to grp_id 94, random group number */
+	format cs1 $20.;
+	format cs2 $20.;
+if cat_pref1='Designer' then do; cs1='Wear'; cs2='S&H'; end;
+if cat_pref1='Contemp' then do; cs1='Wear'; cs2='Designer'; end;
+if cat_pref1='Wear' then do; cs1='Contemp'; cs2='Designer'; end;
+if cat_pref1='Shoes' then do; cs1='Designer'; cs2='Contemp'; end;/*Split Shoes&Handbags*/
+if cat_pref1='Handbags' then do; cs1='Designer'; cs2='Contemp'; end;
+if cat_pref1='Jewelry & Access' then do; cs1='S&H'; cs2='Designer'; end;
+if cat_pref1='Beauty & Fragrance' then do; cs1='Jewelry & Access'; cs2='S&H'; end;
+if cat_pref1='Mens' then do; cs1='Kids'; cs2='Home/Gourmet/Gifts'; end;
+if cat_pref1='Kids' then do; cs1='S&H'; cs2='Contemp'; end;
+if cat_pref1='Home/Gourmet/Gifts' then do; cs1='Kids'; cs2='Jewelry & Access'; end;
+if cat_pref1='Salon Z' then do; cs1='Jewelry & Access'; cs2='S&H'; end;
+	keep EMAIL_ADDRESS 	
+		cat_pref1
+		cat_pref2
+		cat_pref3
+		cat_pref4
+		cs1 cs2;
+run;
+/*Done*/
+
+data OMNI.cm_shoes_handbags_file_fl;
+set OMNI.cust_preference_cross_sjnew_fl;
+if cat_pref1 in ('Beauty & Fragrance') then P1=1;
+if cat_pref1 in ('Contemp') then P1=2;
+if cat_pref1 in ('Designer') then P1=3;
+if cat_pref1 in ('Home/Gourmet/Gifts') then P1=4;
+if cat_pref1 in ('Kids') then P1=5;
+if cat_pref1 in ('Mens') then P1=6;
+if cat_pref1 in ('Salon Z') then P1=7;
+if cat_pref1 in ('Shoes') then P1=81;
+if cat_pref1 in ('Handbags') then P1=82;
+if cat_pref1 in ('Wear') then P1=9;
+if cat_pref1 in ('Jewelry & Access') then P1=10;
+
+if cat_pref2 ne '' then do;
+if cat_pref2 in ('Beauty & Fragrance') then P2=1;
+if cat_pref2 in ('Contemp') then P2=2;
+if cat_pref2 in ('Designer') then P2=3;
+if cat_pref2 in ('Home/Gourmet/Gifts') then P2=4;
+if cat_pref2 in ('Kids') then P2=5;
+if cat_pref2 in ('Mens') then P2=6;
+if cat_pref2 in ('Salon Z') then P2=7;
+if cat_pref2 in ('Shoes','Handbags') then P2=8;
+if cat_pref2 in ('S&H') then P2=8;
+if cat_pref2 in ('Wear') then P2=9;
+if cat_pref2 in ('Jewelry & Access') then P2=10;
+end;
+
+if cat_pref3 ne '' then do;
+if cat_pref3 in ('Beauty & Fragrance') then P3=1;
+if cat_pref3 in ('Contemp') then P3=2;
+if cat_pref3 in ('Designer') then P3=3;
+if cat_pref3 in ('Home/Gourmet/Gifts') then P3=4;
+if cat_pref3 in ('Kids') then P3=5;
+if cat_pref3 in ('Mens') then P3=6;
+if cat_pref3 in ('Salon Z') then P3=7;
+if cat_pref3 in ('Shoes','Handbags') then P3=8;
+if cat_pref3 in ('S&H') then P3=8;
+if cat_pref3 in ('Wear') then P3=9;
+if cat_pref3 in ('Jewelry & Access') then P3=10;
+end;
+
+if cs1 in ('Beauty & Fragrance') then cs_1=1;
+if cs1 in ('Contemp') then cs_1=2;
+if cs1 in ('Designer') then cs_1=3;
+if cs1 in ('Home/Gourmet/Gifts') then cs_1=4;
+if cs1 in ('Kids') then cs_1=5;
+if cs1 in ('Mens') then cs_1=6;
+if cs1 in ('Salon Z') then cs_1=7;
+if cs1 in ('Shoes','Handbags') then cs_1=8;
+if cs1 in ('S&H') then cs_1=8;
+if cs1 in ('Wear') then cs_1=9;
+if cs1 in ('Jewelry & Access') then cs_1=10;
+
+if cs2 in ('Beauty & Fragrance') then cs_2=1;
+if cs2 in ('Contemp') then cs_2=2;
+if cs2 in ('Designer') then cs_2=3;
+if cs2 in ('Home/Gourmet/Gifts') then cs_2=4;
+if cs2 in ('Kids') then cs_2=5;
+if cs2 in ('Mens') then cs_2=6;
+if cs2 in ('Salon Z') then cs_2=7;
+if cs2 in ('Shoes','Handbags') then cs_2=8;
+if cs2 in ('S&H') then cs_2=8;
+if cs2 in ('Wear') then cs_2=9;
+if cs2 in ('Jewelry & Access') then cs_2=10;
+
+if  cat_pref2 ='' and cat_pref3='' then do;
+	p2=cs_1 ;
+	p3=cs_2 ;
+	p2_csflag=1;
+	p3_csflag=1;
+end;
+
+if  cat_pref2 = '' and cat_pref3  ne '' then do;
+	if p3 ne cs_1 then do
+		p2 = cs_1 ;
+		p2_csflag=1;
+	end;
+
+	else if p3 = cs_1 then do
+		p2 = cs_2;
+		p2_csflag=1;
+	end;
+end;
+
+if  cat_pref2 ne '' and cat_pref3 ='' then do;
+	if p2 = cs_1 then p3=cs_2;
+	if p2 ne  cs_1 then p3=cs_1;
+	p3_csflag=1;
+end;
+
+keep 
+	EMAIL_ADDRESS
+	P1
+	P2
+	P3
+	P2_csflag
+	P3_csflag
+	;
+run;
+
+proc sql;select count(*) as obs  from OMNI.cm_shoes_handbags_file_fl where p1=p2 or p1=p3 or p2=p3;quit;
+
+
+DATA  OMNI.cm_shoes_handbags_file_fl(RENAME =(P1=SP1 P2=SP2 P3=SP3));
+SET   OMNI.cm_shoes_handbags_file_fl;
+RUN;
