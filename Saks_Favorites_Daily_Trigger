@@ -1,0 +1,78 @@
+libname xdb 'F:\XDB';
+LIBNAME PRICE 'F:\Fanli\Saks\PRICE_HIST'; 
+libname sddb oracle user= pass= path=neworacle  schema=SDMRK;
+libname ac 'F:\Jenny\Triggered_Emails\ACBALI\AC_Aster\ac_files';
+
+DATA DATE ; 
+XDBDT = PUT(DATE (), YYMMDDN8.); 
+CALL SYMPUTX ('XDBDT',XDBDT); 
+TODAY = PUT(DATE (), YYMMDDN8.); 
+CALL SYMPUTX ('DATE',TODAY); 
+RUN;
+
+proc sql; 
+create table job_Status as
+select distinct *
+from sddb.job_status 
+order by run_date desc;quit;
+ 
+proc sql; 
+select distinct max(datepart(run_date)) as run format date7. into: sddb_update1 from sddb.job_status 
+where job_name = "SDMRK_SAS_OFFLOAD_DAILY" and job_status = "COMPLETED";quit;
+proc sql; 
+select distinct max(datepart(run_date)) as run format date7. into: sddb_update2 from sddb.job_status 
+where job_name = "SDMRK_REFRESH_DAILY" and job_status = "COMPLETED";quit;
+
+%put sddb_update1 =&sddb_update1 ;
+
+%put sddb_update2 =&sddb_update2 ;
+
+
+proc sql; 
+connect to ASTER as ast (DSN=Aster);
+create table aster_day as
+SELECT *FROM connection to ast (
+select distinct max(date(date_filter)) as aster_dt 
+from dw.fact_omni_saks_sessions
+);Disconnect from ast;
+Quit;
+
+
+proc sql; 
+connect to ASTER as ast (DSN=Aster);
+create table aster_day_app as
+SELECT *FROM connection to ast (
+select distinct max(date(date_filter)) as aster_dt_app
+from dw.fact_omni_saks_app_events
+);Disconnect from ast;
+Quit;
+
+
+proc sql; select aster_dt+1 format DATE7. into: aster_dt from aster_day; quit;
+proc sql; select aster_dt_app format DATE7. into: aster_dt_app from aster_day_app; quit;
+%put aster_dt =&aster_dt ;
+%put aster_dt_app =&aster_dt_app ;
+%put sysdate =&sysdate ;
+
+
+%let dsname1=xdb.Saks_xdb_ac_file_&date.;
+%let dsname2=xdb.Adobe_ba_&date.;
+%let dsname3=xdb.fv_&date.;
+
+%macro fv;
+%if &sddb_update1. =  &sysdate.  %then %do;
+	%if &sddb_update2. =  &sysdate.  %then %do; 
+		%if %sysfunc(exist(&dsname3)) = 0 %then %do;
+			%if &aster_dt_app. >=  &sysdate.  %then %do;
+				%if &aster_dt. >=  &sysdate.  %then %do;
+					%include "F:\XDB\CODES\FAV\Favorite_web_app.sas" /source2;		
+				%END;
+			%END;	
+		%END;
+	%end;
+%end;
+%mend fv;
+%fv;
+
+
+
