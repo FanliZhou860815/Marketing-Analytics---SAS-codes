@@ -1,0 +1,456 @@
+
+libname sand oracle user=hbc_analytics_sandbox pass=****** path=neworacle schema='hbc_analytics_sandbox';
+libname tests 'F:\Jenny\Triggered_Emails\acbali\testing';
+libname xdb 'F:\XDB';
+libname ac 'F:\Jenny\Triggered_Emails\ACBALI\Abandon_Files';
+libname ba 'F:\Jenny\Triggered_Emails\ACBALI\Browse_Files';
+libname fanli 'F:\Fanli';
+libname y '\\t49-vol5\marketing\Youjin\Product Recommendation\SAS_DATA';
+libname SDDB oracle user=fayeshi pass==****** path=neworacle  schema=SDMRK;
+libname hist 'F:\Jenny\Triggered_Emails\Favorites\Fav_hist';
+libname counts 'F:\Jenny\Triggered_Emails\Favorites\counts';
+LIBNAME ast ASTER DSN=Aster SCHEMA=dw;
+
+DATA DATE ; 
+TODAY = PUT(DATE (), YYMMDDN8.); 
+CALL SYMPUTX ('DATE',TODAY); 
+RUN;
+
+
+DATA _null_; 
+XDBDT = PUT(TODAY(), YYMMDDN8.);   /*AC BA DATE*/
+CALL SYMPUTX ('XDBDT',XDBDT); 
+BROWSE_DT=PUT(TODAY()-1-1, YYMMDD10.);   
+CALL SYMPUTX ('BROWSE_DT',BROWSE_DT); 
+CUT_START=PUT(TODAY()-2, YYMMDD10.);   
+CALL SYMPUTX ('CUT_START',CUT_START);
+CUT_END=PUT(TODAY()-1, YYMMDD10.);   
+CALL SYMPUTX ('CUT_END',CUT_END); 
+RUN;
+
+
+proc sql; select max(list_date) format YYMMDD10. into: dt from xdb.favs_7days; quit;
+%put &dt.;
+
+
+
+/*app+web*/
+proc sql; 
+connect to ASTER as ast (DSN=Aster);
+create table FV_&date. as
+SELECT *FROM connection to ast (
+select distinct  
+	b.session_uuid,  
+	b.event_timestamp_ny, 
+	event_type_id, 
+	event_name,  
+	b.product_code, 
+	b.product_skn_id,
+	c.visitor_uuid, 
+	c.customer_id, 
+	upper(e.email) as email_address, 
+	e.opt_in,
+	c.app_channel_id
+from dw.fact_omni_saks_app_events b 
+join dw.dim_visitor_devices c on b.visitor_device_uuid = c.visitor_device_uuid
+join dw.dim_customers e on c.customer_id=e.customer_id
+where event_type_id in (34, 35)
+/*and b.date_filter >= (timestamp "&last_sent_dt.") and b.DATE_FILTER <= (TIMESTAMP "&BROWSE_DT.")*/
+and b.DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.")
+and c.customer_id>0
+/*and e.email not in ( '""','0')*/
+and c.app_channel_id is not null 
+union
+select distinct  
+	b.session_uuid,  
+	b.event_timestamp_ny, 
+	event_type_id, 
+	event_name,  
+	b.product_code, 
+	b.product_skn_id,
+	c.visitor_uuid, 
+	c.customer_id, 
+    upper(e.email) as email_address, 
+	e.opt_in,
+	'' as app_channel_id
+from dw.fact_omni_saks_events b 
+join dw.dim_visitor_devices c on b.visitor_device_uuid = c.visitor_device_uuid
+join dw.dim_customers e on c.customer_id=e.customer_id
+where event_type_id in (34, 35)
+/*and b.date_filter >= (timestamp "&last_sent_dt.") and b.DATE_FILTER <= (TIMESTAMP "&BROWSE_DT.")*/
+and b.DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.")
+and c.customer_id>0
+and e.email not in ( '""','0')
+);Disconnect from ast;
+Quit;
+
+proc sort data=FV_&date. ; by email_address product_code descending event_type_id; run;
+
+data FV_&date. ; 
+set FV_&date. ;
+if lag(email_address)= email_address and
+lag(product_code)= product_code 
+and lag(event_type_id)= '35' 
+and event_type_id = '34' then delete;
+if event_type_id = '35' then delete; run;
+
+proc sql;
+select count(distinct email_address) as email,
+count(distinct app_channel_id) as id
+from FV_&date.;
+quit;
+
+data FV_&date. ; 
+set FV_&date. ;
+drop app_channel_id;
+run;
+
+/* price yest */
+proc sql; create table price_max as select distinct product_code, max(price_yest) as price_yest 
+from xdb.price_yesterday_product_code group by 1 order by product_code; quit;
+proc sort data=FV_&date.;		by product_code;run;
+data FV_&date.;
+	merge FV_&date.	(in=a)
+    price_max	(in=b);
+	by product_code;
+	if a ;
+run;
+
+/* add product info */
+data prod_info;set sddb.product( dbsastype= ( prd_id='char(16)' ) ); 
+where  active_indicator = "A" and upcase(brand_name) ne 'CHANEL'
+and product_code not in ('0400011348329','0400011348331') ; run;
+
+proc sql; create table prod_info as select distinct product_code, prd_id, group_id, brand_name, bm_desc, sum(warehouse_sellable_units) as inventory, max(sku_sale_price) as max_price
+from prod_info group by 1,2; quit;
+proc sort data=prod_info;	by product_code;run;
+proc sort data=FV_&date.;	by product_code;run;
+data FV_&date.;
+	merge FV_&date.	(in=a)
+    prod_info	(in=b);
+	by product_code;
+	if a and b;
+run;
+
+
+/* save for pdli */
+data hist.favs_&date.;set FV_&date.; list_date = today() ; format list_date date9.;run;
+
+proc sql; create table FV_&date. as select distinct a.* 
+from FV_&date. a left join sddb.excluded_products b on a.product_code=b.product_code
+where b.product_code is null and inventory>0;
+quit;
+
+
+
+
+/* remove purchasers from last two days OMS */
+proc sql; 
+connect to ASTER as ast (DSN=Aster);
+create table purch_2days as
+SELECT *FROM connection to ast (
+select distinct customer_id
+from dw.fact_oms_orders  a 
+where date(date_filter)>=date(now())-2
+and ops_enterprise_key = 'SAKS'
+);Disconnect from ast;
+Quit;
+
+proc sort data=FV_&date;		by customer_id;run;
+proc sort data=purch_2days;		by customer_id;run;
+data FV_&date.;
+	merge FV_&date	(in=a)
+    purch_2days	(in=b);
+	by  customer_id;
+	if a and not b ;
+run;
+
+/*purchasers from SDMRK*/
+PROC SQL;
+CONNECT TO oracle as db ( path=neworacle user=fayeshi  pass==******  );
+CREATE TABLE PURCHASE_2DAYS_SDMRK   AS
+select * from connection to db
+	(
+	SELECT DISTINCT 
+	email_address , ORDERDATE
+FROM 
+	(SELECT customer_id,ORDERDATE FROM SDMRK.ORDERS  
+	 WHERE trunc(to_date(ORDERDATE),'DD') >=SYSDATE-3
+	AND INDIVIDUAL_ID IS NOT NULL AND INDIVIDUAL_ID NOT IN (0,999999999)) A 
+	INNER JOIN   SDMRK.CUSTOMER C ON A.CUSTOMER_ID=C.CUSTOMER_ID
+)
+;
+Disconnect from db;
+Quit;
+
+proc sort data=FV_&date;		by email_address;run;
+proc sort data=PURCHASE_2DAYS_SDMRK;		by email_address;run;
+data FV_&date.;
+	merge FV_&date	(in=a)
+    PURCHASE_2DAYS_SDMRK	(in=b);
+	by  email_address;
+	if a and not b ;
+run;
+
+data FV_&date.; set FV_&date.; where inventory >0;run;
+
+
+
+/* pick top 9 by price */
+proc sort data = FV_&date.; by EMAIL_aDDRESS descending max_price ; run;
+
+DATA FV_&date.;
+SET FV_&date. END=EOF;              /* READ SAS DATASET */
+BY email_address descending max_price;                                          /* SORT SEQ */
+IF FIRST.email_address then do; IF FIRST.max_price then do; 
+      NUMMETRIC+1;                                     
+      METRICS = 0;
+END; end;
+METRICS + 1;
+RUN;
+data FV_&date.; set FV_&date.; where metrics<10; list_date = today(); format list_date date9.;run;
+
+
+/*suppress favs last 7 days */
+proc sort data=xdb.favs_7days;	by email_address;run;
+proc sort data=FV_&date.;		by email_address;run;
+data FV_&date.;
+	merge FV_&date.	(in=a)
+    xdb.favs_7days	(in=b);
+	by email_address;
+	if a and not b;
+run;
+
+proc sql; create table ids as select distinct email_address, list_date from FV_&date.; quit;
+data xdb.favs_7days; set xdb.favs_7days ids ;  where list_date  > today()-6; run;
+
+proc sql; create table multiple as select distinct email_address, count(distinct brand_name) 
+from FV_&date. where metrics >1 group by 1; quit;
+data multiple; set multiple; recipe = "M"; run;
+proc sort data=multiple;			by email_address;run;
+proc sort data=FV_&date.;			by email_address;run;
+data FV_&date.;
+	merge FV_&date.	(in=a)
+    multiple	(in=b);
+	by email_address;
+	if a ;
+run;
+
+%MACRO TRANSPOSE2 ;
+%DO I= 1 %TO 9;/*maximum number of products for each customer*/
+PROC SQL;
+CREATE TABLE product_rank_&I. AS
+SELECT 
+      DISTINCT 
+            email_address, 
+            product_code AS SKU_&I. LABEL "SKU_&I.",
+			Prd_id AS PRD_&I. LABEL "PRD_&I.",
+			inventory as Inv_&I. LABEL "Inv_&I.",
+            brand_name AS BRAND_&I. LABEL "BRAND_&I.",
+           	bm_desc AS Name_&I. LABEL "NAME_&I.",
+			recipe AS recipe_&I. LABEL "recipe_&I.",
+			brand_name AS rec_strat_&I. LABEL "rec_strat_&I."
+FROM
+      FV_&date.
+WHERE
+      metrics=&I.
+ORDER BY 
+      email_address;
+QUIT;
+
+%END;
+
+%MEND TRANSPOSE2 ;
+%TRANSPOSE2;
+
+DATA favs_t;
+MERGE product_rank_1(IN=A)
+        product_rank_2(IN=B)
+        product_rank_3(IN=C)
+        product_rank_4(IN=D)
+		product_rank_5(IN=E)
+		product_rank_6(IN=F)
+        product_rank_7(IN=G)
+        product_rank_8(IN=H)
+        product_rank_9(IN=I)
+;BY  email_address ;
+IF A;
+RUN;
+
+proc sql; create table counts.fv_&date. as select distinct count(*) from FV_&date.; quit;
+
+PROC SQL;
+CREATE TABLE favs_t AS
+SELECT DISTINCT A.*, B. EMAIL_ID, B.CUSTOMER_ID
+FROM FAVS_T A INNER JOIN FANLI.CUSTOMER_ID B ON UPCASE(A.EMAIL_ADDRESS)= UPCASE(B.EMAIL_ADDRESS);
+QUIT;
+
+
+/*/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////       FRENCH CHARACTER      /////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////*/
+
+
+
+/*MODIFY BRAND_NAME TO BE CONSISTENT*/
+DATA xdb.French_character_decoding;
+SET  xdb.French_character_decoding;
+DROP NUMMETRIC METRICS;
+RUN;
+
+DATA xdb.French_character_decoding;
+SET xdb.French_character_decoding END=EOF;              /* READ SAS DATASET */
+BY numerical_code;                                          /* SORT SEQ */
+IF FIRST.numerical_code THEN DO;                    
+      NUMMETRIC+1;                                     
+      METRICS = 0;
+END;
+METRICS + 1;
+IF LAST.numerical_code THEN DO;                       /* EOF VENDOR, MAKE MAC VARS*/
+      CALL SYMPUT('Mnumerical_code'||LEFT(PUT(NUMMETRIC,3.)),COMPRESS(numerical_code));
+      CALL SYMPUT('MDisplay'||LEFT(PUT(NUMMETRIC,3.)),compress(Display));
+        CALL SYMPUT('MEnglish'||LEFT(PUT(NUMMETRIC,3.)),compress(English_code));
+END;
+IF EOF THEN
+      CALL SYMPUT('MTOTCT',COMPRESS(NUMMETRIC));                  /* MAC VAR NO DIF CTYS */
+RUN;
+
+%PUT *** MTOTCT=&MTOTCT;      
+
+%MACRO LOOPTEST;                                
+%DO I=1 %TO &MTOTCT;                                  /* LOOP THRU ALL VENDORS */
+                  %PUT *** FILE = &&Mnumerical_code&I ILOOP &I OF &MTOTCT ; 
+                          %PUT *** FILE = &&MDisplay&I ILOOP &I OF &MTOTCT ; 
+                          %PUT *** FILE = &&MEnglish&I ILOOP &I OF &MTOTCT ; 
+
+%END; 
+%MEND LOOPTEST;                                       /* END OF MACRO */
+%LOOPTEST   
+
+/*BOTH DISPLAYED FRENCH CHARACTERS AND NUMERIC HTML CODES WILL BE TRANSFORMED TO BE ENGLISH CHARACTERS*/
+%MACRO LOOPTEST;                                
+%DO I=1 %TO &MTOTCT; 
+
+DATA FV_&date.;
+SET  FV_&date.;
+rec_strat_1=tranwrd(rec_strat_1, "&&Mnumerical_code&I..", "&&MEnglish&I..");
+RUN;
+
+
+DATA FV_&date.;
+SET  FV_&date.;
+rec_strat_1=tranwrd(rec_strat_1, "&&MDisplay&I..", "&&MEnglish&I..");
+RUN;
+
+%END; 
+%MEND LOOPTEST;                                       /* END OF MACRO */
+%LOOPTEST   
+
+
+
+/*/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////       EXPORT          /////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////*/
+
+
+
+/*add program code */
+
+PROC SQL;
+CREATE TABLE  xdb.FV_&date. AS
+SELECT
+      DISTINCT
+            Email_Address as Email_Address     FORMAT      $150.,
+            Email_ID    FORMAT      30.,
+            CUSTOMER_ID AS BlueMartiniID  FORMAT      $30.,
+            today() AS Date    FORMAT      mmddyy10.,
+            "FV" as Program_Name  FORMAT      $50.,
+            0 as Program_Code FORMAT      2.,
+            0 AS Priority     FORMAT      4.,
+            '' AS Testing    FORMAT      $2.,
+            recipe_1 AS Recipe  label "Recipe"    FORMAT      $10.,
+            . AS P1_Val      FORMAT      4.,
+            '' AS Cat_Name    FORMAT      $50.,
+            '' AS Folder_ID    FORMAT      $30.,
+            '' AS Folder1     FORMAT      $30.,
+            '' AS Folder2     FORMAT      $30.,
+            '' AS Folder3     FORMAT      $30.,
+            '' AS Folder4     FORMAT      $30.,
+            rec_strat_1 AS Rec_Strategy label "Rec_Strategy" FORMAT      $100.,
+           '' AS Copy1 FORMAT      $100.,
+            '' AS Copy2 label "Copy2" FORMAT      $100.,
+            '' AS Copy3 label "Copy3" FORMAT      $100.,
+            '' AS Copy4   label "Copy4"  FORMAT  $100.,
+            '' AS promo_code  FORMAT      $30.,
+            '' AS barcode     FORMAT      $30.,
+            '' AS RR_Recs     FORMAT      $3.,
+            . AS Products_Total     FORMAT      5.,
+            Prd_1 FORMAT      $30.,
+            Sku_1 FORMAT      $30.,
+            Brand_1     FORMAT      $50.,
+            Name_1      FORMAT      $50.,
+            Prd_2 FORMAT      $30.,
+            Sku_2 FORMAT      $30.,
+            Brand_2     FORMAT      $50.,
+            Name_2      FORMAT      $50.,
+            Prd_3 FORMAT      $30.,
+            Sku_3 FORMAT      $30.,
+            Brand_3     FORMAT      $50.,
+            Name_3      FORMAT      $50.,
+            Prd_4 FORMAT      $30.,
+            Sku_4 FORMAT      $30.,
+            Brand_4     FORMAT      $50.,
+            Name_4      FORMAT      $50.,
+            Prd_5 AS Prd_5 FORMAT      $30.,
+            Sku_5 AS Sku_5 FORMAT      $30.,
+            Brand_5 AS Brand_5     FORMAT      $50.,
+            Name_5 AS Name_5      FORMAT      $50.,
+            Prd_6 AS Prd_6 FORMAT      $30.,
+            Sku_6 AS Sku_6 FORMAT      $30.,
+            Brand_6 AS Brand_6     FORMAT      $50.,
+            Name_6 AS Name_6      FORMAT      $50.,
+            Prd_7 AS Prd_7 FORMAT      $30.,
+            Sku_7 AS Sku_7 FORMAT      $30.,
+            Brand_7 AS Brand_7     FORMAT      $50.,
+            Name_7 AS Name_7      FORMAT      $50.,
+            Prd_8 AS Prd_8 FORMAT      $30.,
+            Sku_8 AS Sku_8 FORMAT      $30.,
+            Brand_8 AS Brand_8     FORMAT      $50.,
+            Name_8 AS Name_8      FORMAT      $50.,
+            Prd_9 AS Prd_9 FORMAT      $30.,
+            Sku_9 AS Sku_9 FORMAT      $30.,
+            Brand_9 AS Brand_9     FORMAT      $50.,
+            Name_9 AS Name_9      FORMAT      $50.,
+            '' AS WL_Rcvd_Status    FORMAT      $2.,
+            '' AS LI_Type     FORMAT      $2.,
+            Inv_1 AS Inv_1 FORMAT      5.,
+            Inv_2 AS Inv_2 FORMAT      5.,
+            Inv_3 AS Inv_3 FORMAT      5.,
+            Inv_4 AS Inv_4 FORMAT      5.,
+            Inv_5 AS Inv_5 FORMAT      5.,
+            Inv_6 AS Inv_6 FORMAT      5.,
+            Inv_7 AS Inv_7 FORMAT      5.,
+            Inv_8 AS Inv_8 FORMAT      5.,
+            Inv_9 AS Inv_9 FORMAT      5.
+FROM
+       favs_t;
+QUIT;
+
+data xdb.fv_dt;  dt = today(); format dt date9.; run;
+
+data price_yesterday; set sddb.product (keep = sku_sale_price product_code); run;
+
+proc sql; create table xdb.price_yesterday_product_code as select distinct product_code, max(sku_sale_price) as price_yest 
+from price_yesterday group by 1; quit;
