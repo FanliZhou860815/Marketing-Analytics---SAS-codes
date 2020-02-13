@@ -1,0 +1,30 @@
+/*File split stratified by key metrics*/
+
+
+PROC SORT DATA=freq_t.EMAIL_MASTER_Cluster; 
+BY Orders_12m Gross_sales_12_m_class SAKS_ENTERPRISE_STATUS  VIP ;
+RUN;
+
+proc surveyselect data=freq_t.EMAIL_MASTER_Cluster
+out=freq_t.EMAIL_MASTER_Cluster_t1
+method=srs
+samprate=0.333
+seed=9754;
+strata Orders_12m Gross_sales_12_m_class SAKS_ENTERPRISE_STATUS  VIP;
+run;
+
+
+proc sql;
+create table freq_t.EMAIL_MASTER_Cluster_left as
+select * from freq_t.EMAIL_MASTER_Cluster 
+where email_id not in (select email_id from freq_t.EMAIL_MASTER_Cluster_t1);
+quit;
+
+
+proc surveyselect data=freq_t.EMAIL_MASTER_Cluster_left
+out=freq_t.EMAIL_MASTER_Cluster_t2
+method=srs
+samprate=0.5
+seed=9754;
+strata Orders_12m Gross_sales_12_m_class SAKS_ENTERPRISE_STATUS  VIP;
+run;
