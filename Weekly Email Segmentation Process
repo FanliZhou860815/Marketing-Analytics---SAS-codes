@@ -1,0 +1,1100 @@
+
+*****************************************************************************************
+*****************************************************************************************
+**********************************Weekly Email Process **********************************
+*****************************************************************************************
+*****************************************************************************************;
+LIBNAME SAKS 'M:\Fanli\EMAIL SEGMENTS\Transaction Segmentation';
+LIBNAME orders 'M:\Orders';
+LIBNAME OMNI 'M:\Fanli\EMAIL SEGMENTS\Transaction Segmentation';
+LIBNAME BC 'M:\Fanli\EMAIL SEGMENTS\Transaction Segmentation\BC';
+LIBNAME SDDB oracle user=fanlizhou pass= path=neworacle schema='SDMRK';
+LIBNAME FANLI 'M:\FANLI';
+LIBNAME EMAIL 'M:\Fanli\EMAIL SEGMENTS';
+libname MSEG 'm:\Yan\Saks_Mens_Hypersegment\Library';
+LIBNAME SBP 'M:\Fanli\CXT\STORE BUYER SEGMENTATION';
+
+proc sql;
+create table job_status as
+select * from sddb.job_status order by job_start_time desc;
+quit; 
+
+/*WEEKLY STORE DATA PULL*/
+%include  "M:\Fanli\STORE DATA\STORE_DAILY_WEEKLY_PULL.sas" /source2;
+
+/*ONLINE AND STORE PROCESS RUN INDEPENDENTLY*/
+
+/*STORE PROCESS*/
+%include  "F:\Fanli\EMAIL SEGMENTS\Transaction Segmentation\SAKS_FL_SEGMENTATION.sas" /source2;
+/*KEY OUTPUT TABLES: OMNI.cm_shoes_handbags_file_fl*/
+/*60min*/
+
+/*ONLINE PROCESS*/
+%include  "F:\Fanli\EMAIL SEGMENTS\Transaction Segmentation\EMAIL_SEGMENTATION_TRANSACTION.sas" /source2;
+/*KEY OUTPUT TABLES: BC.TOP&rank._CAT_HIST_8E*/
+/*15 min*/
+
+/*BROWSE PROCESS FOR NON BUYERS*/
+/*%include  "F:\Fanli\CXT\BP1_trial_rev.sas" /source2;*/
+/*KEY OUTPUT TABLES:TRIAL.BROWSE_SEGMENTATION_FILE  */
+/*1.5 hours*/
+/*FOR ONLY BUYERS*/
+/*%include  "F:\Fanli\CXT\BP1_trial_rev_buyers.sas" /source2;*/
+/*KEY OUTPUT TABLES: BBP.CAT_PY_MASTER*/
+/*1.5 hours*/
+
+
+/*BROWSE PROCESS FOR ONLY BUYERS*/
+/*%include  "F:\Fanli\CXT\BP1_trial_rev_store_buyers.sas" /source2;/*KEY OUTPUT TABLES: SBP.BROWSE_SEGMENTATION_FILE*/*/
+/*1 hour*/
+
+/*Faye's note: need to declare library SBP from the browse code.*/
+
+
+/*COMBINE ONLINE AND STORE*/
+;
+PROC SORT DATA=BC.TOP&rank._CAT_HIST_8E; BY EMAIL_ADDRESS;RUN;
+PROC SORT DATA=OMNI.cm_shoes_handbags_file_fl; BY EMAIL_ADDRESS;RUN;
+DATA SAKS.Weekly_data_consolidate;
+MERGE BC.TOP&rank._CAT_HIST_8E(IN=A)
+	  OMNI.cm_shoes_handbags_file_fl(IN=B);
+BY EMAIL_ADDRESS;
+IF A OR B ;
+RUN;
+
+/*New P3 Logic and SP Logic*/
+
+
+DATA SAKS.Weekly_data_consolidate;
+SET SAKS.Weekly_data_consolidate;
+IF SP1 NE . AND P1 NE . THEN DO; /*If they have a store pref 1*/
+	IF P1 NE SP1 and P2 NE SP1 THEN DO;
+			P3 = SP1;
+		END;
+END;
+run;
+DATA SAKS.Weekly_data_consolidate;
+SET SAKS.Weekly_data_consolidate(drop=p2_csflag p3_csflag);
+IF SP1 NE . AND P1 NE . THEN DO; /*If they have a store pref 1*/
+	SP1 =. ;
+	SP2 =. ;
+	SP3 =. ;
+END;
+RUN;
+
+
+/*browse segmentation from Candice*/
+%include "M:\Candice\Aster\Browse_Segmentation\NonBuyer_Browse_Segmentation.sas" /source2;
+%include "M:\Candice\Aster\Browse_Segmentation\OL_Buyer_Browse_Segmentation.sas" /source2;
+
+/*ADD BUYER BROWSE SEGMENTATION  AND SPLIT INTO TEST & CONTROL*/
+
+libname BBP 'M:\Candice\Aster\Browse_Segmentation\OL_BUYER';
+
+data SAKS.Weekly_data_consolidate; 
+set saks.Weekly_data_consolidate;
+drop P1_BBP P2_BBP P3_BBP P1_SBP P2_SBP P3_SBP;
+run;
+
+
+PROC SQL;
+CREATE TABLE SAKS.Weekly_data_consolidate AS
+SELECT
+	DISTINCT 
+		A.*, 
+		INPUT(B.P1,2.) AS P1_BBP,
+		INPUT(B.P2,2.) AS P2_BBP,
+		INPUT(B.P3,2.) AS P3_BBP, 
+		INPUT(C.P1,2.) AS P1_SBP,
+		INPUT(C.P2,2.) AS P2_SBP,
+		INPUT(C.P3,2.) AS P3_SBP
+FROM
+	SAKS.Weekly_data_consolidate  A
+	LEFT JOIN BBP.BROWSE_SEGMENTATION_FILE B ON A. EMAIL_ADDRESS=B. EMAIL_ADDRESS
+	LEFT JOIN SBP.BROWSE_SEGMENTATION_FILE C ON A. EMAIL_ADDRESS=C. EMAIL_ADDRESS
+	;
+QUIT;
+
+PROC SORT  DATA=SAKS.Weekly_data_consolidate; BY DESCENDING P1 DESCENDING P2 DESCENDING P3 ;RUN;
+
+
+PROC SQL;
+CREATE TABLE SAKS.Weekly_data_consolidate_REV  AS
+/*1. NO BROWSE P1 GROUP OR P1= P1_BBP OR SP1=P1_SBP*/
+SELECT DISTINCT EMAIL_ADDRESS, P1,P2,P3, HYPERCLUSTER, SP1, SP2, SP3
+FROM
+	SAKS.Weekly_data_consolidate 
+WHERE
+	(P1_BBP IS NULL AND P1_SBP IS NULL) 
+	OR (P1_BBP IS NOT NULL AND P1 =P1_BBP )
+	OR (P1_SBP IS NOT NULL AND SP1=P1_SBP)
+UNION ALL
+/*2. BROWSE P1 FOR ONLINE BUYERS ;BP1 NE P1*/
+SELECT
+	DISTINCT EMAIL_ADDRESS,P1_BBP AS P1, P2_BBP AS P2 , P3_BBP AS P3, HYPERCLUSTER, SP1, SP2, SP3
+FROM
+	SAKS.Weekly_data_consolidate 
+WHERE
+	P1_BBP IS NOT NULL AND P1 IS NOT NULL AND P1_BBP NE P1 
+UNION ALL
+/*3. BROWSE P1 FOR STORE BUYERS;BP1 NE SP1*/
+SELECT
+	DISTINCT EMAIL_ADDRESS,P1, P2 , P3, HYPERCLUSTER, P1_SBP AS SP1, P2_SBP AS SP2, P3_SBP AS SP3
+FROM
+	SAKS.Weekly_data_consolidate 
+WHERE
+	P1_SBP IS NOT NULL AND SP1 IS NOT NULL AND P1_SBP NE SP1 ;
+QUIT;
+
+PROC SQL;
+CREATE TABLE MISSING_CHECK AS
+SELECT *
+FROM 
+	SAKS.Weekly_data_consolidate WHERE EMAIL_ADDRESS NOT IN (SELECT EMAIL_ADDRESS FROM SAKS.Weekly_data_consolidate_REV );
+QUIT;
+
+
+PROC SQL;
+CREATE TABLE SAKS.Weekly_data_consolidate_REV AS
+SELECT
+	EMAIL_ADDRESS, P1,P2,P3, HYPERCLUSTER, SP1, SP2, SP3
+FROM
+	SAKS.Weekly_data_consolidate_REV 
+UNION ALL
+SELECT
+	EMAIL_ADDRESS, P1,P2,P3, HYPERCLUSTER, SP1, SP2, SP3
+FROM
+	MISSING_CHECK;
+QUIT;
+
+
+proc sql;create table SAKS.Weekly_data_consolidate_REV AS SELECT DISTINCT * FROM SAKS.Weekly_data_consolidate_REV; QUIT;
+
+
+libname br 'M:\Candice\Aster\Browse_Segmentation\NonBuyer';
+
+/*ADD NON-BUYER BROWSE SEGMENTATION EMAILS*/
+
+/*ADD NON BUYER BROWSE SEGMENTS*/
+PROC SQL;
+CREATE TABLE br.BROWSE_SEGMENTATION_FILE AS
+SELECT
+	distinct *
+FROM
+	br.BROWSE_SEGMENTATION_FILE
+WHERE
+	EMAIL_aDDRESS not IN (SELECT EMAIL_aDDRESS FROM SAKS.Weekly_data_consolidate_REV  WHERE P1 IS NOT NULL or sp1 is not null)
+	;
+QUIT;
+/*963126*/
+
+
+DATA br.BROWSE_SEGMENTATION_FILE ;
+SET br.BROWSE_SEGMENTATION_FILE ;
+IF P2 IN ('81','82') THEN P2='8';
+IF P3 IN ('81','82') THEN P3='8';
+RUN;
+DATA br.BROWSE_SEGMENTATION_FILE ;
+SET br.BROWSE_SEGMENTATION_FILE ;
+BP1=P1;
+IF BP1 IN ('81','82') THEN BP1='8';
+IF BP1 IN ('10') THEN BP1='0';
+RUN;
+
+
+PROC SQL;
+CREATE TABLE br.P1_CT AS SELECT DISTINCT P1 , COUNT(DISTINCT EMAIL_ADDRESS) AS EMLS FROM br.BROWSE_SEGMENTATION_FILE GROUP BY 1;
+QUIT;
+PROC SQL;
+CREATE TABLE br.P2_CT AS SELECT DISTINCT  P2, COUNT(DISTINCT EMAIL_ADDRESS) AS EMLS FROM br.BROWSE_SEGMENTATION_FILE GROUP BY 1;
+QUIT;
+PROC SQL;
+CREATE TABLE br.P3_CT AS SELECT DISTINCT P3 , COUNT(DISTINCT EMAIL_ADDRESS) AS EMLS FROM br.BROWSE_SEGMENTATION_FILE GROUP BY 1;
+QUIT;
+
+
+
+proc sql;
+create table SAKS.WEEKLY_DATA_CONSOLIDATE_TC as
+select
+	distinct 
+		email_address,
+		p1,
+		p2,
+		p3,
+		hypercluster,
+		sp1,
+		sp2,
+		sp3,
+		'Online' as Flag
+from
+/*	SAKS.WEEKLY_DATA_CONSOLIDATE_TC*/
+	SAKS.Weekly_data_consolidate_REV	
+where p1 is not null or sp1 is not null
+union
+select
+	distinct 
+		email_address,
+		INPUT(p1,2.),
+		INPUT(p2,2.),
+		INPUT(p3,3.),
+		. as hypercluster,
+		. as sp1,
+		. as sp2,
+		. as sp3,
+		'Browse' as Flag
+from
+	br.BROWSE_SEGMENTATION_FILE 
+;
+quit;
+
+data SAKS.WEEKLY_DATA_CONSOLIDATE_TC ;
+set SAKS.WEEKLY_DATA_CONSOLIDATE_TC ;
+if Flag='Browse' then bp1=p1;
+IF BP1 IN (81,82) THEN BP1=8;
+IF BP1 IN (10) THEN BP1=0;
+run;
+
+
+
+proc sort data=SAKS.WEEKLY_DATA_CONSOLIDATE_TC; by email_address desending p1 desending sp1 desending bp1;run;
+
+data SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+set SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+by email_address;
+if first.email_address=1;
+run;
+
+
+DATA SAKS.WEEKLY_DATA_CONSOLIDATE_TC ;
+SET SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+if p1=. and bp1 ne . then delete;
+if p1=. and bp1 =. and sp1=.  then delete;
+
+run;
+
+data SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+set SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+if p1 ne . and (p1=p2 or p1=p2 or p2=p3) then delete;
+drop flag
+;run;
+
+
+proc sql;
+select count(distinct email_address) as emls , count(*) as obs from SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+quit;
+
+proc sql;
+create table SAKS.weekly_final_check as
+select 
+	distinct
+		p1,p2,p3,hypercluster,
+		sp1,sp2,sp3,bp1,
+		count(distinct email_address) as emls
+from
+	SAKS.WEEKLY_DATA_CONSOLIDATE_TC
+group by
+	1,2,3,4,5,6,7,8;
+quit;
+
+proc sql;
+create table  p1_cnts_current as
+select distinct p1, sp1, bp1, count(distinct email_address) as emls
+from SAKS.WEEKLY_DATA_CONSOLIDATE_TC
+group by p1, sp1, bp1;
+quit;
+
+
+proc sql;
+create table SAKS.P1_BP1_CNTs as
+select 
+	distinct
+		p1,bp1,
+		count(distinct email_address) as emls
+from
+	SAKS.WEEKLY_DATA_CONSOLIDATE_TC
+group by
+	1,2;
+quit;
+
+
+data SAKS.weekly_final_check;
+set SAKS.weekly_final_check;
+if p1 ne . and p1=p2 then flag="ERROR_1";
+if p1 ne . and p1=p3 then flag="ERROR_1";
+if P2 ne . and p2=p3 then flag="ERROR_1";
+if Sp1 ne . and Sp1=Sp2 then flag="ERROR";
+if Sp1 ne . and Sp1=Sp3 then flag="ERROR";
+if SP2 ne . and Sp2=Sp3 then flag="ERROR";
+if SP1 ne . and P1 NE . then flag="ERROR";
+if SP2 ne . and P2 NE . then flag="ERROR";
+if SP3 ne . and P3 NE . then flag="ERROR";
+/*if p1 ne . and bp1 ne . then flag="ERROR";*/
+/*if sp1 ne . and bp1 ne . then flag="ERROR";*/
+run;
+
+proc sort data=SAKS.weekly_final_check; by descending flag bp1 sp1 sp2 sp3 p1 p2 p3;run;
+
+/*category_1 – Type: Number Length: 20*/
+/*sub_category_1 - Type: Number Length: 20*/
+/*sub_category_2 - Type: Number Length: 20*/
+/*sub_category_3 - Type: Number Length: 20*/
+/*brand_1 - Type: Text Length: 100*/
+/*brand_2- Type: Text Length: 100*/
+/*brand_3- Type: Text Length: 100*/
+;
+
+DATA CATEGORY_1 ;
+FORMAT P1 2.;
+INFORMAT CATEGORY_1 $20.;
+INPUT P1 CATEGORY_1 $;
+CARDS;
+1  2534374306418051
+2  2534374306418048
+3  2534374306418048
+4  2534374306418054
+5  2534374306418053
+6  2534374306418052
+7  2534374306640515
+81 2534374306622397
+82 2534374306622828
+9  2534374306418048
+10 2534374306418050
+RUN;
+
+
+DATA SAKS.WEEKLY_DATA_CONSOLIDATE_TC ;
+SET SAKS.WEEKLY_DATA_CONSOLIDATE_TC ;
+IF P1=1 THEN CATEGORY_1='2534374306418051';
+IF P1=2 THEN CATEGORY_1='2534374306418048';
+IF P1=3 THEN CATEGORY_1='2534374306418048';
+IF P1=4 THEN CATEGORY_1='2534374306418054';
+IF P1=5 THEN CATEGORY_1='2534374306418053';
+IF P1=6 THEN CATEGORY_1='2534374306418052';
+IF P1=7 THEN CATEGORY_1='2534374306640515';
+IF P1=81 THEN CATEGORY_1='2534374306622397';
+IF P1=82 THEN CATEGORY_1='2534374306622828';
+IF P1=9 THEN CATEGORY_1='2534374306418048';
+IF P1=10 THEN CATEGORY_1='2534374306418050';
+
+IF SP1=1 THEN CATEGORY_1='2534374306418051';
+IF SP1=2 THEN CATEGORY_1='2534374306418048';
+IF SP1=3 THEN CATEGORY_1='2534374306418048';
+IF SP1=4 THEN CATEGORY_1='2534374306418054';
+IF SP1=5 THEN CATEGORY_1='2534374306418053';
+IF SP1=6 THEN CATEGORY_1='2534374306418052';
+IF SP1=7 THEN CATEGORY_1='2534374306640515';
+IF SP1=81 THEN CATEGORY_1='2534374306622397';
+IF SP1=82 THEN CATEGORY_1='2534374306622828';
+IF SP1=9 THEN CATEGORY_1='2534374306418048';
+IF SP1=10 THEN CATEGORY_1='2534374306418050';
+
+RUN;
+
+/**/
+/**/
+/*PROC SQL;*/
+/*CREATE TABLE email. WEEKLY_DATA_CONSOLIDATE_BP1 AS*/
+/*SELECT*/
+/*	DISTINCT A.*, B. SUB_CATEGORY_1,B. SUB_CATEGORY_2, B. SUB_CATEGORY_3*/
+/*FROM*/
+/*	email. WEEKLY_DATA_CONSOLIDATE_BP1  A LEFT JOIN EMAIL.EML_UNITS_FOLDER_TOP3_T B ON A.EMAIL_ADDRESS=B.EMAIL_ADDRESS;*/
+/*QUIT;*/
+
+/**/
+/**/
+DATA SAKS.WEEKLY_DATA_CONSOLIDATE_TC ;
+SET SAKS.WEEKLY_DATA_CONSOLIDATE_TC ;
+SUB_CATEGORY_1='';
+SUB_CATEGORY_2='';
+SUB_CATEGORY_3='';
+
+RUN;
+
+proc sql;
+select distinct p1, count(distinct email_Address) as emls
+from BR.BROWSE_SEGMENTATION_FILE  group by 1;
+quit;
+
+proc sql;
+select distinct count(*) as obs , count(distinct email_Address) as emls
+from SAKS.WEEKLY_DATA_CONSOLIDATE_TC ;
+quit;
+
+
+/*BRAND AFFINITY SCORING*/
+%include  "F:\Fanli\EMAIL SEGMENTS\EMAIL_BRAND_RANK_ASTER.sas" /source2;
+
+
+libname SUB 'M:\Yan\Email_Campaign\Email_Subcat_Affinity\library';
+proc sql;
+CONNECT TO oracle as db ( path=neworacle user=fanlizhou	pass=);
+CREATE TABLE SAKS.CATEGORY_TREE AS
+select * from connection to db
+	(
+SELECT 
+	CAT.*,SUBCAT1.SUB_CAT_L1,SUBCAT1.SUB_CAT_NAME_L1,SUBCATL2.SUB_CAT_L2,SUBCATL2.SUB_CAT_NAME_L2
+FROM 
+    (SELECT 
+        DISTINCT 
+        TO_CHAR(FOLDER_PARENT_ID,'999999999999999999') AS CATEGORY_ID , 
+        PARENT_FOLDER_NAME AS category 
+    FROM SDMRK.PRD_ASSORTMENT A 
+    WHERE UPPER(PARENT_FOLDER_NAME) IN ('WOMEN''S APPAREL','JEWELRY & ACCESSORIES','SHOES','HANDBAGS','BEAUTY','MEN','KIDS','HOME','VIEW ALL BEAUTY')
+    AND ASSORTMENT  IN ('WomensApparel','TheMensStore','Shoes','SaksBeautyPlace','Handbags','JustKids','JewelryAccessories','HomeHiTech') ) CAT
+INNER JOIN 
+
+(SELECT 
+  DISTINCT 
+  TO_CHAR(FOLDER_ID,'999999999999999999')   as SUB_CAT_L1, 
+  TO_CHAR(FOLDER_PARENT_ID,'999999999999999999')   as CATEGORY_ID, 
+    folder_name AS SUB_CAT_NAME_L1
+FROM SDMRK.PRD_ASSORTMENT A 
+   
+WHERE UPPER(PARENT_FOLDER_NAME) IN ('WOMEN''S APPAREL','JEWELRY & ACCESSORIES','SHOES','HANDBAGS','BEAUTY','MEN','KIDS','HOME','VIEW ALL BEAUTY')
+      AND ASSORTMENT  IN ('WomensApparel','TheMensStore','Shoes','SaksBeautyPlace','Handbags','JustKids','JewelryAccessories','HomeHiTech')
+GROUP BY FOLDER_ID,FOLDER_PARENT_ID,folder_name) SUBCAT1
+	  ON CAT.CATEGORY_ID =SUBCAT1.CATEGORY_ID
+LEFT JOIN 
+(SELECT DISTINCT 
+	TO_CHAR(FOLDER_ID,'999999999999999999')   as SUB_CAT_L2,
+	TO_CHAR(FOLDER_PARENT_ID,'999999999999999999')   as SUB_CAT_L1,
+	folder_name AS SUB_CAT_NAME_L2
+FROM SDMRK.PRD_ASSORTMENT
+WHERE FOLDER_PARENT_ID IN  
+(SELECT  FOLDER_ID FROM (SELECT 
+  DISTINCT 
+    FOLDER_ID
+FROM SDMRK.PRD_ASSORTMENT  A 
+   
+WHERE UPPER(PARENT_FOLDER_NAME) IN ('WOMEN''S APPAREL','JEWELRY & ACCESSORIES','SHOES','HANDBAGS','BEAUTY','MEN','KIDS','HOME','VIEW ALL BEAUTY')
+      AND ASSORTMENT  IN ('WomensApparel','TheMensStore','Shoes','SaksBeautyPlace','Handbags','JustKids','JewelryAccessories','HomeHiTech')))
+GROUP BY FOLDER_ID,FOLDER_PARENT_ID,folder_name) SUBCATL2
+ON SUBCAT1.SUB_CAT_L1=SUBCATL2.SUB_CAT_L1
+)
+;
+Disconnect from db;
+Quit;
+
+PROC SORT DATA=SAKS.CATEGORY_TREE ; BY category SUB_CAT_NAME_L1 SUB_CAT_NAME_L2;RUN;
+
+
+
+proc sql;
+CONNECT TO oracle as db ( path=neworacle user=fanlizhou	pass=);
+CREATE TABLE SAKS.ACTIVE_CNTS AS
+select * from connection to db
+	(
+SELECT FOLDER_ID, SUM(ACTIVE_PRDS) AS ACTIVE_PRDS
+FROM 
+	(SELECT 
+		TO_CHAR(FOLDER_ID,'999999999999999999')   as FOLDER_ID, 
+		COUNT(DISTINCT A.PRODUCT_CODE) AS ACTIVE_PRDS
+	FROM
+		SDMRK.PRD_ASSORTMENT A 
+		INNER JOIN (SELECT DISTINCT PRODUCT_CODE 
+	                FROM SDMRK.PRODUCT 
+	                WHERE PRODUCT_CODE IS NOT NULL 
+	                AND ACTIVE_INDICATOR ='A'
+	                AND DEACTIVE_IND ='N'
+	                AND READYFORPROD_FLAG <> 'F' 
+	                AND (WAREHOUSE_SELLABLE_UNITS > 0 
+	                      OR STORE_INVENTORY >0  
+	                      OR (BACKORDER_INDICATOR = 'T' AND WAREHOUSE_BACKORDER_UNITS>0 ))
+	                ) B ON A.PRODUCT_CODE=B.PRODUCT_CODE
+	GROUP BY TO_CHAR(FOLDER_ID,'999999999999999999')  
+	UNION ALL
+	SELECT 
+		TO_CHAR(FOLDER_PARENT_ID,'999999999999999999')   as FOLDER_ID, 
+		COUNT(DISTINCT A.PRODUCT_CODE) AS ACTIVE_PRDS
+	FROM
+		SDMRK.PRD_ASSORTMENT A 
+		INNER JOIN (SELECT DISTINCT PRODUCT_CODE 
+	                FROM SDMRK.PRODUCT 
+	                WHERE PRODUCT_CODE IS NOT NULL 
+	                AND ACTIVE_INDICATOR ='A'
+	                AND DEACTIVE_IND ='N'
+	                AND READYFORPROD_FLAG <> 'F' 
+	                AND (WAREHOUSE_SELLABLE_UNITS > 0 
+	                      OR STORE_INVENTORY >0  
+	                      OR (BACKORDER_INDICATOR = 'T' AND WAREHOUSE_BACKORDER_UNITS>0 ))
+	                ) B ON A.PRODUCT_CODE=B.PRODUCT_CODE
+	GROUP BY TO_CHAR(FOLDER_PARENT_ID,'999999999999999999') )
+GROUP BY FOLDER_ID
+)
+;
+Disconnect from db;
+Quit;
+
+PROC SQL;
+CREATE TABLE SAKS.CATEGORY_TREE AS 
+SELECT DISTINCT 
+	A.*, 
+	B.ACTIVE_PRDS AS ACTIVE_PRDS_L1,
+	C.ACTIVE_PRDS AS ACTIVE_PRDS_L2
+/*,*/
+/*	D.ACTIVE_PRDS AS ACTIVE_PRDS_L3*/
+FROM 
+	SAKS.CATEGORY_TREE  A 
+	LEFT JOIN SAKS.ACTIVE_CNTS B ON A.SUB_CAT_L1=B.FOLDER_ID
+	LEFT JOIN SAKS.ACTIVE_CNTS C ON A.SUB_CAT_L2=C.FOLDER_ID
+/*	LEFT JOIN SAKS.ACTIVE_CNTS D ON A.SUB_CAT_L3=D.FOLDER_ID*/
+;
+QUIT;
+
+
+PROC SQL;
+CREATE TABLE SAKS.FOLDER_ID_MAPPING AS
+SELECT DISTINCT CATEGORY,SUB_CAT_L1 ,SUB_CAT_NAME_L1 , ACTIVE_PRDS_L1
+FROM SAKS.CATEGORY_TREE 
+WHERE  ACTIVE_PRDS_L1 >=1
+UNION
+SELECT DISTINCT CATEGORY,SUB_CAT_L2 AS SUB_CAT_L1  ,
+SUB_CAT_NAME_L2 As SUB_CAT_NAME_L1,ACTIVE_PRDS_L2  as ACTIVE_PRDS_L1
+FROM SAKS.CATEGORY_TREE 
+WHERE  ACTIVE_PRDS_L2 >=1;
+;
+QUIT;
+
+
+PROC SORT DATA=SAKS.FOLDER_ID_MAPPING;
+BY CATEGORY SUB_CAT_NAME_L1 DESCENDING ACTIVE_PRDS_L1 ;
+RUN;
+
+
+
+DATA SAKS.FOLDER_ID_MAPPING;
+SET  SAKS.FOLDER_ID_MAPPING;
+BY  CATEGORY SUB_CAT_NAME_L1  ACTIVE_PRDS_L1;
+IF FIRST.SUB_CAT_NAME_L1;
+RUN;
+DATA SAKS.FOLDER_ID_MAPPING;
+SET  SAKS.FOLDER_ID_MAPPING;
+IF CATEGORY=LAG(CATEGORY) AND SUB_CAT_NAME_L1=LAG(SUB_CAT_NAME_L1) THEN DUPLICATE=1;
+RUN;
+DATA SAKS.FOLDER_ID_MAPPING;
+SET  SAKS.FOLDER_ID_MAPPING;
+WHERE DUPLICATE <>1;RUN;
+
+
+
+
+
+DATA SAKS.FOLDER_ID_MAPPING;
+SET SAKS.FOLDER_ID_MAPPING;
+IF category IN  ('Beauty','View All Beauty') THEN CAT_NUM =1;
+ELSE IF category= "Women's Apparel" THEN CAT_NUM =239;
+ELSE IF category= 'Home' THEN CAT_NUM =4;
+ELSE IF category= 'Kids' THEN CAT_NUM =5;
+ELSE IF category= 'Men' THEN CAT_NUM =6;
+ELSE IF category= 'Shoes' THEN CAT_NUM =81;
+ELSE IF category= 'Handbags' THEN CAT_NUM =82;
+ELSE IF category= 'Jewelry & Accessories' THEN CAT_NUM =10;
+RUN;
+
+PROC SORT DATA=SAKS.FOLDER_ID_MAPPING; BY CAT_NUM category SUB_CAT_L1 
+;RUN;
+
+
+DATA SUB.EMAIL_SUBS_TOP3;
+SET SUB.Total_purchase_browse_subcat;
+WHERE S_NO<=3;
+KEEP EMAIL_ADDRESS CAT_NUM left_nav_l1 S_NO;
+RUN;
+
+PROC SORT DATA= SUB.EMAIL_SUBS_TOP3 ; BY EMAIL_ADDRESS S_NO;RUN;
+
+PROC SQL;
+CREATE TABLE SUB.EMAIL_SUBS_TOP3 AS 
+SELECT DISTINCT A.*, B.SUB_CAT_L1, SUB_CAT_NAME_L1
+FROM SUB.EMAIL_SUBS_TOP3  A 
+INNER JOIN  SAKS.FOLDER_ID_MAPPING B 
+ON A.CAT_NUM= B.CAT_NUM 
+AND TRIM(UPCASE(A.left_nav_l1))=TRIM(UPCASE(B.SUB_CAT_NAME_L1))
+ORDER BY EMAIL_ADDRESS ,S_NO ,SUB_CAT_L1;
+QUIT;
+
+
+DATA SUB.EMAIL_SUBS_TOP3;
+SET SUB.EMAIL_SUBS_TOP3;
+IF EMAIL_ADDRESS= LAG(EMAIL_ADDRESS) AND S_NO=LAG(S_NO) AND SUB_CAT_L1 =LAG(SUB_CAT_L1) THEN DELETE;
+S_NO=.;
+RUN;
+
+DATA SUB.EMAIL_SUBS_TOP3;
+SET SUB.EMAIL_SUBS_TOP3;
+DROP S_NO;RUN;
+
+
+DATA SUB.EMAIL_SUBS_TOP3;
+SET SUB.EMAIL_SUBS_TOP3;
+BY EMAIL_ADDRESS;
+IF FIRST.EMAIL_ADDRESS THEN DO;
+		S_NO =0;
+END;
+S_NO+1;
+RUN;
+
+
+PROC TRANSPOSE 
+DATA=SUB.EMAIL_SUBS_TOP3
+OUT= SUB.EMAIL_SUBS_TOP3_T PREFIX=SUB_CATEGORY_;
+BY EMAIL_ADDRESS ;
+ID S_NO;
+VAR SUB_CAT_L1;
+RUN;
+
+
+
+data SAKS.WEEKLY_DATA_CONSOLIDATE_TC  ;
+set SAKS.WEEKLY_DATA_CONSOLIDATE_TC  ;
+drop 
+SUB_CATEGORY_1 SUB_CATEGORY_2 SUB_CATEGORY_3
+brand_1 brand_2 brand_3
+;
+run;
+
+
+PROC SQL;
+CREATE TABLE SAKS.WEEKLY_DATA_CONSOLIDATE_TC  AS
+SELECT
+	DISTINCT A.*,  
+	SUB_CATEGORY_1 , SUB_CATEGORY_2,  SUB_CATEGORY_3, 
+B. BRAND_1,B. BRAND_2, B. BRAND_3
+FROM
+	SAKS.WEEKLY_DATA_CONSOLIDATE_TC A 
+	LEFT JOIN email.Email_brands_t B ON A.EMAIL_ADDRESS=B.EMAIL_ADDRESS
+	LEFT JOIN SUB.EMAIL_SUBS_TOP3_T C  ON A.EMAIL_ADDRESS=C.EMAIL_ADDRESS
+	;
+QUIT;
+
+/*PROC SQL;SELECT COUNT(DISTINCT EMAIL_ADDRESS) AS EMLS FROM email. WEEKLY_DATA_CONSOLIDATE_BP1 ;QUIT;*/
+
+
+
+DATA CHECK;
+SET SAKS.WEEKLY_DATA_CONSOLIDATE_TC ;
+WHERE EMAIL_ADDRESS IN ('FANLIZHOUSAB@GMAIL.COM','FANLIZHOU0815@GMAIL.COM','ELIESECN@GMAIL.COM',
+'JOSH_PRATT@S5A.COM','FANLIZHOU0815@GMNAIL.COM','NIVEDHITHA.SWAMINATHAN@GMAIL.COM',
+'KRISTIN.IVIE@GMAIL.COM','KRISTIN.MAA@HBC.COM','KRISTIN.MAA@S5A.COM');
+RUN;
+ 
+
+DATA SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+SET SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+IF EMAIL_aDDRESS IN ('TRACYMARGOLIES@YAHOO.COM','TRACY_MARGOLIES@S5A.COM','JASMIN_MEYERS@S5A.COM') THEN DO;
+	P1=3;
+	P2=2;
+	P3=8;
+	SP1=. ;
+	SP2=.;
+	SP3=.;
+	BP1=.;
+END;
+
+ELSE IF EMAIL_aDDRESS IN ('RICHARD.BAKER@HBC.COM','JACKBAKER97@YAHOO.COM') THEN DO;
+	P1=6;
+	P2=8;
+	P3=3;
+	SP1=. ;
+	SP2=.;
+	SP3=.;
+	BP1=.;
+END;
+
+RUN;
+
+DATA SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+SET SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+DROP MEN_SEG;
+RUN;
+
+
+PROC SQL;
+CREATE TABLE SAKS.WEEKLY_DATA_CONSOLIDATE_TC AS
+SELECT A.*, B. MEN_SEG
+FROM  SAKS.WEEKLY_DATA_CONSOLIDATE_TC  A 
+LEFT JOIN MSEG.IND_WEIGHT B ON A.EMAIL_ADDRESS=B.EMAIL_ADDRESS;
+QUIT;
+
+DATA SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+SET SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+IF P1 =6 THEN HYPERCLUSTER = MEN_SEG;
+DROP MEN_SEG;
+RUN;
+
+PROC SQL;
+SELECT DISTINCT HYPERCLUSTER, count(email_address) as emls FROM SAKS.WEEKLY_DATA_CONSOLIDATE_TC where p1 =6 or sp1=6 group by 1;
+QUIT;
+
+
+PROC SQL;
+SELECT DISTINCT count(*) AS OBS, count(DISTINCT email_address) as emls FROM SAKS.WEEKLY_DATA_CONSOLIDATE_TC ;
+QUIT;
+
+
+DATA SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+SET SAKS.WEEKLY_DATA_CONSOLIDATE_TC;
+if p2 in(81,82) then p2=8;
+if p3 in(81,82) then p3=8;
+if sp2 in(81,82) then sp2=8;
+if sp3 in(81,82) then sp3=8;
+run;
+
+proc sql;select distinct p1 from SAKS.WEEKLY_DATA_CONSOLIDATE_TC;quit;
+proc sql;select distinct p2 from SAKS.WEEKLY_DATA_CONSOLIDATE_TC;quit;
+proc sql;select distinct p3 from SAKS.WEEKLY_DATA_CONSOLIDATE_TC;quit;
+proc sql;select distinct sp1 from SAKS.WEEKLY_DATA_CONSOLIDATE_TC;quit;
+proc sql;select distinct sp2 from SAKS.WEEKLY_DATA_CONSOLIDATE_TC;quit;
+proc sql;select distinct sp3 from SAKS.WEEKLY_DATA_CONSOLIDATE_TC;quit;
+
+
+DATA _null_; 
+TODAY = PUT(DATE (), YYMMDDN8.); 
+CALL SYMPUTX ('rundt',TODAY); 
+run;
+%PUT &rundt.;
+
+
+%MACRO export(file);
+	PROC EXPORT DATA= &file 
+		OUTFILE = &filename
+		DBMS = CSV REPLACE;
+	RUN;
+%MEND export;
+
+%let outputpath=
+\\t49-vol4.saksinc.com\Ecommerce\2017 Analytics\Customer Analytics & DataScience\Saks\Segmentation\Email;
+%let filename = "&outputPath.\SD_Buyers_HyperSeg_&rundt..csv"; %export(SAKS.WEEKLY_DATA_CONSOLIDATE_TC);
+
+
+%let outputpath=
+\\t49-vol4.saksinc.com\Ecommerce\2017 Analytics\Customer Analytics & DataScience\Saks\Segmentation\Email;
+%let filename = "&outputPath.\weekly_final_check_&rundt..csv"; %export(SAKS.weekly_final_check);
+
+
+
+
+/* export directly to CM FTP */
+filename XDBFTP ftp "SD_Buyers_HyperSeg_&rundt..csv"
+/*ftp host domain*/
+host="filerepo.saksdirect.com"
+/*directory on FTP to place file into*/
+cd="/autoproc/"
+/*user login id*/
+user="marketing"
+/*password for above user. */
+pass="MarOCT=2015";
+
+/*export file to ftp*/
+proc export data = SAKS.WEEKLY_DATA_CONSOLIDATE_TC
+      outfile=XDBFTP
+      DBMS=CSV REPLACE;
+run;
+
+filename XDBFTP clear;
+
+proc sql;
+create table saks.Rr_email_feed as
+select email_address, p1, hypercluster
+from SAKS.WEEKLY_DATA_CONSOLIDATE_TC 
+where p1 is not null
+union all
+select email_address, sp1 as p1, . as hypercluster 
+from SAKS.WEEKLY_DATA_CONSOLIDATE_TC 
+where p1 is  null and sp1 is not null;
+quit;
+
+
+
+data  saks.Rr_email_feed;
+set SAKS.Rr_email_feed;
+if p1 in (4,6,9,10) then hypercluster =. ;
+keep email_address p1 hypercluster;
+run;
+
+
+
+/* export directly to CM FTP */
+filename XDBFTP ftp "weekly_email_segmentation.csv"
+/*ftp host domain*/
+host="filerepo.saksdirect.com"
+/*directory on FTP to place file into*/
+cd="/dwauto/"
+/*user login id*/
+user="marketing"
+/*password for above user. */
+pass="";
+
+/*export file to ftp*/
+proc export data = SAKS.Rr_email_feed
+      outfile=XDBFTP
+      DBMS=CSV REPLACE;
+run;
+
+filename XDBFTP clear;
+
+
+
+
+
+
+data saks.ind_p1_mhp;
+set saks.customers_preference_cross_sjnew;
+
+if cat_pref1 in ('Shoes') then p1=81;
+if cat_pref1 in ('Handbags') then p1=82;
+
+if cat_pref1 in ('Beauty & Fragrance') then P1=1;
+if cat_pref1 in ('Contemp') then P1=2;
+if cat_pref1 in ('Designer') then P1=3;
+if cat_pref1 in ('Home/Gourmet/Gifts') then P1=4;
+if cat_pref1 in ('Kids') then P1=5;
+if cat_pref1 in ('Mens') then P1=6;
+if cat_pref1 in ('Salon Z') then P1=7;
+
+if cat_pref1 in ('Wear') then P1=9;
+if cat_pref1 in ('Jewelry & Access') then P1=10;
+
+keep 
+	individual_id
+	P1
+	;
+run;
+
+
+/*Segment	Decode*/
+/*Default	Shoes*/
+/*1A	Women’s Apparel*/
+/*1C	Men’s*/
+/*1D	Beauty & Fragrances*/
+/*1E	Jewelry & Accessories*/
+/*1F	Kids*/
+/*1G	Home*/
+/*1H	Handbags*/
+/*1J	Shoes*/
+
+
+DATA saks.SEG_P1;
+INPUT SEGMENT $ P1;
+CARDS;
+1D	1
+1A	2
+1A	3
+1G	4
+1F	5
+1C	6
+1A	7
+1J	81
+1H	82
+1A	9
+1E	10
+RUN;
+
+PROC SORT DATA=saks.ind_p1_mhp; BY P1;RUN;
+PROC SORT DATA=saks.SEG_P1; BY P1;RUN;
+DATA saks.ind_p1_mhp;
+MERGE saks.ind_p1_mhp(IN=A)
+	  saks.SEG_P1(IN=B);
+BY P1;
+IF A AND B;
+KEEP INDIVIDUAL_ID SEGMENT;
+RUN;
+
+
+PROC SQL;CREATE TABLE saks.ind_p1_mhp AS
+SELECT DISTINCT 'MHP' AS PAGE, INDIVIDUAL_ID ,SEGMENT
+FROM saks.ind_p1_mhp
+where individual_id not in (.,0);
+QUIT;
+
+
+PROC SQL;CREATE TABLE saks.eml_p1_mhp AS
+SELECT DISTINCT 'MHP' AS PAGE, email_address ,SEGMENT
+FROM SAKS.WEEKLY_DATA_CONSOLIDATE_TC a inner join saks.SEG_P1 b on a.P1=b.P1
+;QUIT;
+
+data saks.eml_p1_mhp  ;
+set saks.eml_p1_mhp  ;
+if _n_<=110 then delete;
+run;
+
+proc sql;
+create table saks.eml_p1_mhp as
+select * from saks.eml_p1_mhp where email_address like ('%@%');
+quit;
+ 
+
+
+
+%MACRO export(file);
+	PROC EXPORT DATA= &file 
+		OUTFILE = &filename
+		DBMS = CSV REPLACE;
+	RUN;
+%MEND export;
+
+%LET OUTPUTPATH=I:\2017 Analytics\Customer Analytics & DataScience\Saks\Segmentation\MHP;
+%let filename = "&outputPath.\&rundt._model_score_ind.csv"; %export(saks.ind_p1_mhp);
+%let filename = "&outputPath.\&rundt._model_score_eml.csv"; %export(saks.eml_p1_mhp);
+
+
+LIBNAME CURATED 'M:\Candice\Saks\Curated_Sales';
+
+PROC SQL;
+CREATE TABLE SAKS.EML_P1_SALE AS
+SELECT 'SALE' AS PAGE, A.EMAIL_ADDRESS, B.SEGMENT 
+FROM CURATED.Curated_sale_emails_02122019 A LEFT JOIN SAKS.EML_P1_MHP B 
+ON A.EMAIL_ADDRESS=B.EMAIL_ADDRESS;
+QUIT;
+
+
+
+DATA saks.SEG_P1;
+INPUT SEGMENT $ P1;
+CARDS;
+1D	1
+1A	2
+1A	3
+1G	4
+1F	5
+1C	6
+1A	7
+1J	81
+1H	82
+1A	9
+1E	10
+RUN;
+
+
+DATA SAKS.EML_P1_SALE;
+SET SAKS.EML_P1_SALE;
+IF SEGMENT='1D' THEN SEGMENT='1A';
+IF SEGMENT='1G' THEN SEGMENT='1A';
+IF SEGMENT='1F' THEN SEGMENT='1A';
+IF SEGMENT='1E' THEN SEGMENT='1H';
+IF SEGMENT='' THEN SEGMENT='1A';
+RUN;
+
+PROC SQL;
+SELECT DISTINCT SEGMENT FROM SAKS.EML_P1_SALE;
+QUIT;
+
+
+%LET OUTPUTPATH=I:\2017 Analytics\Customer Analytics & DataScience\Saks\Segmentation\MHP;
+%let filename = "&outputPath.\&rundt._sale_model_score_eml.csv"; %export(saks.EML_P1_SALE);
+
+
+
+proc sql;
+create table checks_2 as
+select b.individual_id, a.* 
+from SAKS.WEEKLY_DATA_CONSOLIDATE_TC  a inner join sddb.customer b on a.email_address=b.email_address
+where a.email_address in ('FANLIZHOUSAB@GMAIL.COM','SHARON.FYSWEET@GMAIL.COM');
+QUIT;
+
+data checks_hyperseg;
+set BC.TOP&rank._CAT_HIST_8E;
+where email_address in ('FANLIZHOUSAB@GMAIL.COM','SHARON.FYSWEET@GMAIL.COM');
+run;
+;
+
+/*SMS SEGMENTATION*/
+Libname MOBILE 'F:\Candice\SMS\SAKS\MatchBack';
+
+PROC SQL;
+CREATE TABLE SAKS. Vibes_P1_&rundt. AS
+SELECT 
+	DISTINCT 
+		A.MOBILE_NUM as mdn ,
+		B.P1 as p1
+FROM	
+	MOBILE.MOBILE_LEVEL_FINAL A INNER JOIN SAKS.Weekly_data_consolidate_tc B ON A.EMAIL_ADDRESS=B.EMAIL_ADDRESS
+WHERE
+	P1 IN (1,6)
+UNION
+SELECT 
+	DISTINCT 
+		A.MOBILE_NUM as mdn ,
+		B.SP1 as p1
+FROM	
+	MOBILE.MOBILE_LEVEL_FINAL A INNER JOIN SAKS.Weekly_data_consolidate_tc B ON A.EMAIL_ADDRESS=B.EMAIL_ADDRESS
+WHERE
+	SP1 IN (1,6)
+;
+QUIT;
+
+PROC SQL;SELECT COUNT(DISTINCT MOBILE_NUM) AS EMLS, COUNT(*) AS OBS FROM SAKS.VIBES_P1_&rundt.;QUIT;
+
+
+%LET OUTPUTPATH=I:\2017 Analytics\Customer Analytics & DataScience\Saks\Segmentation\SMS;
+%let filename = "&outputPath.\saks_SMS_P1_data.persons.csv"; %export(SAKS.Vibes_P1_&rundt.);
+
+filename SMS ftp "saks_SMS_P1_data.persons.csv"
+/*ftp host domain*/
+host="file.vibes.com"
+/*directory on FTP to place file into*/
+cd="/in/"
+/*user login id*/
+user="saks-9364" 
+/*password for above user. 'm4rkt1ng' password is not a typo*/
+pass="winter2!"
+;
+
+/*export file to ftp*/
+proc export data = SAKS.Vibes_P1_&rundt.
+      outfile=SMS
+      DBMS=CSV REPLACE;
+run;
+
+filename SMS clear;
+
+
+/*ADD SUBCAT ,ADJUST P1 SP1 FOR AIQ*/
+
+
+DATA SUB.EMAIL_SUBS_TOP3_A;
+SET SUB.Total_purchase_browse_subcat;
+WHERE S_NO<=3;
+KEEP EMAIL_ADDRESS eml_adj S_NO;
+RUN;
+
+PROC SORT DATA= SUB.EMAIL_SUBS_TOP3_A ; BY EMAIL_ADDRESS S_NO;RUN;
+
+
+
+PROC TRANSPOSE 
+DATA=SUB.EMAIL_SUBS_TOP3_A
+OUT= SUB.EMAIL_SUBS_TOP3_TA PREFIX=SUB_CATEGORY_;
+BY EMAIL_ADDRESS ;
+ID S_NO;
+VAR eml_adj;
+RUN;
+
+
+
+PROC SQL;
+CREATE TABLE SAKS.WEEKLY_DATA_CONSOLIDATE_AIQ  AS
+SELECT 
+	DISTINCT 
+		A.EMAIL_ADDRESS,
+		CASE WHEN P1 IS NULL AND SP1 IS NOT NULL THEN SP1 ELSE P1 END AS P1 ,
+		CASE WHEN P2 IS NULL AND SP2 IS NOT NULL THEN SP2 ELSE P2 END AS P2 ,
+		CASE WHEN P3 IS NULL AND SP3 IS NOT NULL THEN SP3 ELSE P3 END AS P3 ,
+		HYPERCLUSTER,
+		SP1,SP2,SP3, BP1, CATEGORY_1, BRAND_1,BRAND_2,BRAND_3, 
+		B.SUB_CATEGORY_1,B.SUB_CATEGORY_2,B.SUB_CATEGORY_3
+
+FROM 
+	SAKS.WEEKLY_DATA_CONSOLIDATE_TC A 
+	LEFT JOIN  SUB.EMAIL_SUBS_TOP3_TA B ON A.EMAIL_ADDRESS=B.EMAIL_ADDRESS;
+QUIT;
+ 
+	
+
+
+PROC SQL;
+CREATE TABLE DUPLICATE AS
+SELECT * FROM SAKS.Weekly_data_consolidate_tc 
+WHERE (P1= P2 AND P1 IS NOT NULL) OR (SP1= SP2 AND SP1 IS NOT NULL) ;
+QUIT;
