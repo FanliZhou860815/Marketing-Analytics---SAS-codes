@@ -1,0 +1,2100 @@
+
+
+/*Prelimilary Step*/
+/*Creating a subset of orders tables */
+LIBNAME ANY 'M:\fanli\Mystery_Money_Modeling\ANY';
+libname mm 'M:\fanli\Mystery_Money_Modeling';
+LIBNAME vip '\\jxn-ms-sas\direct\Nivy\VIP\VIP Program\VIP\vip analysis\vip program';
+libname SALE '\\jxn-ms-sas\direct\Fanli\Sale Segment\Library';
+libname SDDBCOPY '\\jxn-ms-sas\direct\FTPLOCATION';
+libname DM Teradata schema=SVC_sas_views  user=fayeshi password=connect7 tdpid=ncr_10;
+libname SV Teradata schema=svc_dm_sd   user=fayeshi    password=connect7 tdpid=ncr_10;
+libname SDDB oracle user=fanlizhou pass=z658702	 path=neworacle schema='SDMRK';
+libname FANLI 'F:\fanli';
+libname ORDERS 'M:\ORDERS';
+
+proc sql;
+create table job_status as
+select * from sddb.job_status order by job_start_time desc; 
+quit;
+
+
+************;
+/*Getting responders */
+/*any one shopped in one of specific month last in the last 3 years*/
+
+%Let year_1=2016;
+%Let year_2=2017;
+%Let year_3=2018;
+%let month=3;
+%let last_month=2;
+/*fiscal month*/
+
+PROC SQL;
+SELECT  MIN(DATEPART(ORDERDATE))-1 AS CUT_OFF_1  FORMAT DATE9. INTO: CUT_OFF_1
+FROM FANLI.WEEKLY_CALENDAR 
+WHERE YEAR=&YEAR_1. AND MONTH_NUMBER=&MONTH.;
+QUIT;
+%put &CUT_OFF_1;
+
+
+PROC SQL;
+SELECT  MIN(DATEPART(ORDERDATE))-1 AS CUT_OFF_2  FORMAT DATE9. INTO: CUT_OFF_2
+FROM FANLI.WEEKLY_CALENDAR 
+WHERE YEAR=&YEAR_2. AND MONTH_NUMBER=(&MONTH.);
+QUIT;
+%put &CUT_OFF_2;
+
+
+PROC SQL;
+SELECT  MIN(DATEPART(ORDERDATE))-1 AS CUT_OFF_3  FORMAT DATE9. INTO: CUT_OFF_3
+FROM FANLI.WEEKLY_CALENDAR 
+WHERE YEAR=&YEAR_3. AND MONTH_NUMBER=&MONTH.;
+QUIT;
+%put &CUT_OFF_3;
+
+
+/*COPY STORE DATA FROM S DRIVE TO F:\FANLI\MYSTERY_MONEY_MODELING*/
+
+/*Prelimilary Step*/
+/*Creating a subset of orders tables */
+proc sql;
+create table mm.orders as
+select
+		order_number,
+		DATEPART(orderdate) AS ORDERDATE FORMAT DATE9.,
+		individual_id,
+		order_line_status,
+		demand_dollars,
+		demand_units,
+		sku,
+		employee_indicator,
+		division_id,
+		group_id,
+		Saks_First_Indicator
+from
+	sddb.orders
+where
+	  EMPLOYEE_INDICATOR = 0 
+      AND individual_id ne . and individual_id ne 0 and individual_id ne 999999999 
+      AND individual_id not in
+(100062711,100124494,100211107,100231594,100232112,100244071,100289680,100313095,100321594,100344491,100540062,100554994,
+	100692682,100694627,100805942,100834587,100838472,100930788,101007278,101196902,101506686,101779275,102189936,102226585,102254017,
+	102264328,102289121,102353235,102386984,102387696,102387938,102402947,102404144,102418232,102483914,102526360,102531341,102535395,
+	102536160,102536263,102536477,102536550,102536731,102537296,102538184,102567715,102567829,102577459,102609723,102611150,102618825,
+	102632907,102637504,102638912,102639010,102689779,102690016,102692901,102694284,102710099,102712589,102717619,102745828,102750466,
+	102759938,102766384,102774485,102784130,102785560,102796238,102796448,102803409,102811787,102813669,102825278,102832156,102832600,
+	102836568,108726543, 107262786, 108378697)
+	AND DIVISION_ID NOT IN ('4','5','9')
+	AND ORDER_LINE_STATUS IN ('X','R','D')
+UNION
+select
+		order_number,
+		DATEPART(orderdate) AS ORDERDATE FORMAT DATE9.,
+		individual_id,
+		order_line_status,
+		demand_dollars,
+		demand_units,
+		sku,
+		employee_indicator,
+		division_id,
+		group_id,
+		Saks_First_Indicator
+from
+	orders.v_orders_hist_new
+where
+	  EMPLOYEE_INDICATOR = 0 
+      AND individual_id ne . and individual_id ne 0 and individual_id ne 999999999 
+      AND individual_id not in
+(100062711,100124494,100211107,100231594,100232112,100244071,100289680,100313095,100321594,100344491,100540062,100554994,
+	100692682,100694627,100805942,100834587,100838472,100930788,101007278,101196902,101506686,101779275,102189936,102226585,102254017,
+	102264328,102289121,102353235,102386984,102387696,102387938,102402947,102404144,102418232,102483914,102526360,102531341,102535395,
+	102536160,102536263,102536477,102536550,102536731,102537296,102538184,102567715,102567829,102577459,102609723,102611150,102618825,
+	102632907,102637504,102638912,102639010,102689779,102690016,102692901,102694284,102710099,102712589,102717619,102745828,102750466,
+	102759938,102766384,102774485,102784130,102785560,102796238,102796448,102803409,102811787,102813669,102825278,102832156,102832600,
+	102836568,108726543, 107262786, 108378697)
+	AND DIVISION_ID NOT IN ('4','5','9')
+	AND ORDER_LINE_STATUS IN ('X','R','D');
+QUIT;
+/**/
+/*proc sql;*/
+/*create table mm.orders as */
+/*SELECT DISTINCT A.*, B. FS, B.EGC, B.DOL, B.PCT, B.GWP*/
+/*FROM MM.ORDERS A LEFT JOIN MM.PROMO_ORDERS B ON A.ORDER_NUMBER=B.ORDER_NUMBER;*/
+/*QUIT;*/
+
+proc sql;
+select max(orderdate) as orderdate_max format date9. from mm.orders ;
+quit;
+
+
+proc sql;
+create table mm.orders as 
+select 
+	distinct
+		a.*,
+		c.item_cost,
+		C.SKU_LIST_PRICE,
+		b.year,
+		b.month_number,
+		b.quarter_number
+from
+	mm.orders a 
+	inner join FANLI.weekly_calendar b  on a.ORDERDATE=b.DATE
+	inner join sddb.product c on a.sku=c.sku;
+quit;
+
+
+data customer(KEEP=INDIVIDUAL_ID EMAIL_ADDRESS);
+set sddb.customer;
+WHERE INDIVIDUAL_ID NOT IN (0,.,999999999) ;  
+run;
+
+PROC SQL;
+CREATE TABLE mm.orders AS
+SELECT 	DISTINCT A.*, B.CATEGORY 
+FROM mm.orders A LEFT JOIN SDDBCOPY.CATEGORY_MAP B ON A.GROUP_ID=B.GROUP_ID;
+QUIT;
+
+
+PROC SQL;
+CREATE TABLE MM.TOTAL_ORDERS AS
+SELECT
+	 	INDIVIDUAL_ID,
+		ORDER_NUMBER,
+		ORDERDATE,
+		sku,
+		DEMAND_DOLLARS,
+		demand_units,
+		SKU_LIST_PRICE*DEMAND_UNITS AS LIST_PRICE,
+		(DEMAND_DOLLARS -DEMAND_UNITS*ITEM_COST )AS MARGIN,
+		YEAR,
+		MONTH_NUMBER,
+		 group_id,
+		CATEGORY,
+		SAKS_FIRST_INDICATOR,
+		'OL' AS CHANNEL
+FROM
+	MM.ORDERS
+;
+QUIT;
+
+
+
+
+PROC SQL;
+CREATE TABLE RESPONDER_&YEAR_1. AS 
+SELECT DISTINCT INDIVIDUAL_ID, "&CUT_OFF_1."D AS CUT_OFF FORMAT DATE9. 
+FROM MM.ORDERS 
+WHERE 
+	YEAR=&YEAR_1. AND MONTH_NUMBER=&MONTH.
+;
+QUIT;
+
+
+PROC SQL;
+CREATE TABLE RESPONDER_&YEAR_2. AS 
+SELECT DISTINCT INDIVIDUAL_ID, "&CUT_OFF_2."D  AS CUT_OFF FORMAT DATE9. 
+FROM MM.ORDERS 
+WHERE 
+	YEAR=&YEAR_2. AND MONTH_NUMBER=&MONTH.;
+QUIT;
+
+PROC SQL;
+CREATE TABLE RESPONDER_&YEAR_3. AS 
+SELECT DISTINCT INDIVIDUAL_ID, "&CUT_OFF_3."D AS CUT_OFF FORMAT DATE9. 
+FROM MM.ORDERS 
+WHERE 
+	YEAR=&YEAR_3. AND MONTH_NUMBER=&MONTH.;
+;
+QUIT;
+
+/*RESONPERS DEFINED AS ANYONE WHO PURCHASED IN ANY OF MAY IN LAST 3 YEARS*/
+DATA ANY.RESPONDER;
+SET RESPONDER_&YEAR_1.
+	RESPONDER_&YEAR_2.
+	RESPONDER_&YEAR_3.;
+RESPONDER = 1;
+RUN;
+
+PROC SQL; 
+CREATE TABLE ANY.RESPONDER2 AS 
+SELECT 
+	DISTINCT 
+		INDIVIDUAL_ID, 
+		MAX(CUT_OFF) AS MAX_CUT_OFF FORMAT DATE9., 
+		MAX(RESPONDER) AS RESPONDER 
+FROM ANY.RESPONDER 
+GROUP BY 1 ; 
+QUIT;
+
+		
+
+PROC SQL;
+SELECT datepart(MAX(ORDERDATE)) FORMAT DATE9. INTO : NON_CUT_OFF_START 
+FROM FANLI.WEEKLY_CALENDAR
+WHERE YEAR=&YEAR_1-1 AND MONTH_NUMBER=&MONTH.;
+QUIT;
+%PUT &NON_CUT_OFF_START.;
+
+PROC SQL;
+SELECT datepart(MAX(ORDERDATE)) FORMAT DATE9. INTO : NON_CUT_OFF_END
+FROM FANLI.WEEKLY_CALENDAR
+WHERE YEAR=&YEAR_3 AND MONTH_NUMBER=&MONTH.;
+QUIT;
+%PUT &NON_CUT_OFF_END.;
+
+
+PROC SQL; CREATE TABLE NONRESPONDER AS 
+SELECT DISTINCT 
+	INDIVIDUAL_ID 
+FROM MM.ORDERS
+WHERE 
+	ORDERDATE GE "&NON_CUT_OFF_START."D AND ORDERDATE LE "&NON_CUT_OFF_END."D
+;
+QUIT;
+
+PROC SQL;
+CREATE TABLE ANY.NONRESPONDER AS 
+SELECT DISTINCT A.INDIVIDUAL_ID FROM NONRESPONDER A
+EXCEPT
+SELECT DISTINCT B.INDIVIDUAL_ID FROM ANY.RESPONDER2 B;
+QUIT;
+
+
+
+PROC SQL;
+SELECT MIN(DATEPART(DATETIME))-1 FORMAT DATE9. INTO : NON_CUT_OFF
+FROM FANLI.WEEKLY_CALENDAR
+WHERE YEAR=&YEAR_3 AND MONTH_NUMBER=&MONTH.;
+QUIT;
+%PUT &NON_CUT_OFF.;
+
+DATA ANY.NONRESPONDER;
+SET ANY.NONRESPONDER;
+FORMAT MAX_CUT_OFF DATE9.;
+MAX_CUT_OFF = "&NON_CUT_OFF."D;
+RESPONDER = 0;
+RUN;
+
+DATA ANY.MASTER;
+SET ANY.NONRESPONDER ANY.RESPONDER2 ; 
+RUN;
+
+PROC SQL;SELECT DISTINCT RESPONDER, COUNT(DISTINCT individual_id) AS NO_BUYERS FROM ANY.MASTER GROUP BY 1;QUIT;
+/*                                     RESPONDER  NO_BUYERS*/
+/*                                      ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ*/
+/*                                              0    1,548,829*/
+/*                                              1     263,396*/
+/*                                    RESPONDER  NO_BUYERS*/
+/*                                      ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ*/
+/*                                              0    175,3499*/
+/*                                              1     384,675*/
+/*RESPONDER NO_BUYERS */
+/*0 1701558 */
+/*1 458646 */
+/*RESPONDER NO_BUYERS */
+/*0 1918848 */
+/*1 381149 *//*sep 2018*/
+
+/*RESPONDER NO_BUYERS */
+/*0 1717374 */
+/*1 635311 *//*NOV 2018*/
+
+/*RESPONDER NO_BUYERS */
+/*0 2003176 */
+/*1 377491 */
+
+/*RESPONDER NO_BUYERS */
+/*0 2060355 */
+/*1 329934 *//*feb 2019*/
+
+
+************;
+
+
+
+
+/*Create Dependent Variables */
+
+/*All History Orders for Responders and Non-Responders*/
+PROC SQL;
+CREATE TABLE ANY.RESPOND_ORDERS  AS
+SELECT
+	DISTINCT
+		A.*,B.*
+FROM
+	ANY.MASTER A INNER JOIN 
+	MM.ORDERS B ON A.INDIVIDUAL_ID=B.INDIVIDUAL_ID
+	;
+QUIT;
+
+proc sql;
+select min(orderdate) as min_orderdate format date9. , max(orderdate) as max_orderdt  format date9. from any.respond_orders ;
+quit;
+
+
+
+/*All Recency variables should be calculated from the cut_off date*/
+
+/*Flag Orders within 12M before Max_Cut_OFF*/
+DATA  ANY.RESPOND_ORDERS;
+SET ANY.RESPOND_ORDERS;
+where ORDERDATE <=MAX_CUT_OFF ;
+IF ABS(INTCK('MONTH', (ORDERDATE),(MAX_CUT_OFF)))<=12 THEN M12=1;ELSE M12=0;
+RUN;
+
+DATA  CHECK;;
+SET ANY.RESPOND_ORDERS;
+where ORDERDATE >MAX_CUT_OFF ;
+RUN;
+
+/*INDIVIDUAL_ID TIME SERIES */
+DATA  ANY.RESPOND_ORDERS;;
+SET ANY.RESPOND_ORDERS;
+MONTH_INTERVAL=INTCK('MONTH', ORDERDATE,MAX_CUT_OFF);
+QTR_INTERVAL=INT((MONTH_INTERVAL+3)/3);
+RUN;
+
+
+PROC SQL;
+CREATE TABLE ANY.ID_SPEND_QTR AS
+SELECT
+	DISTINCT 
+		INDIVIDUAL_ID, QTR_INTERVAL, SUM(DEMAND_DOLLARS) AS DMD
+FROM 
+	ANY.RESPOND_ORDERS
+GROUP BY 1,2;
+QUIT;
+
+DATA ANY.ID_SPEND_QTR_LAST_36M ;
+SET ANY.ID_SPEND_QTR ;
+WHERE QTR_INTERVAL<=13;
+RUN;
+
+
+proc transpose data=any.ID_SPEND_QTR_LAST_36M  
+out=any.ID_SPEND_QTR_LAST_36M_T prefix=QTR_;
+by individual_id;
+id QTR_INTERVAL;
+var DMD;
+run;
+
+DATA any.ID_SPEND_QTR_LAST_36M_T;
+SET any.ID_SPEND_QTR_LAST_36M_T;
+/*array testmiss(*)QTR_1--QTR_13;*/
+array testmiss(*)QTR_9--QTR_6;
+  do i = 1 to dim(testmiss);                                              
+    if testmiss(i)=. then testmiss(i)=0;
+	if testmiss(i)>0 then testmiss(i)=1;
+  end;                                                                    
+run; 
+
+
+/*Time Since Last Purchase in Months from Max_Cut_Off (Last Purchase Prior to Cut Off to Cut Off Date)*/
+/*Time Since First Ever Purchase in Months to Max Cut Off Date*/
+
+proc sql;
+create table any.tsfp_tslp as
+select distinct INDIVIDUAL_ID, 
+abs(intck('month',max((orderdate)),(max_cut_off))) as tslp,
+abs(intck('month',min((orderdate)),(max_cut_off))) as tsfp
+from ANY.RESPOND_ORDERS
+group by 1;
+quit; 
+
+PROC SQL; SELECT COUNT(DISTINCT INDIVIDUAL_ID) AS EMLS FROM ANY.RESPOND_ORDERS;QUIT;
+
+/*Total Spend in most recent purchase prior to Max_Cut_Off*/
+
+Proc sql;
+Create table any.lord_Dt as
+Select
+	Distinct 
+		INDIVIDUAL_ID, 
+		m12,
+		max(orderdate) as lord_dt format date9.
+From
+	Any.RESPOND_ORDERS 
+group by 1
+;
+quit;
+
+proc sql;
+create table any.RESPOND_ORDERS as
+select
+	distinct a.*,b.lord_dt
+from
+	any.RESPOND_ORDERS a inner join any.lord_Dt b on a.INDIVIDUAL_ID=b.INDIVIDUAL_ID;
+quit;
+
+data any.RESPOND_ORDERS;
+set any.RESPOND_ORDERS;
+if orderdate=lord_dt then lord_flag=1;else lord_flag=0;
+run;
+
+proc sql;create table any.spend_recent_purchase as
+Select
+	Distinct INDIVIDUAL_ID,
+		sum(Demand_dollars) as gs_lord
+From
+		Any.RESPOND_ORDERS
+where
+	lord_flag=1
+group by 1;
+quit;
+
+/*Total Spend in 12 months prior to Max_Cut_Off*/
+/*Orders L12*/
+/*Demand L12*/
+Proc sql;
+Create table any.spend_last_12m as
+Select
+	Distinct INDIVIDUAL_ID, 
+	sum(Demand_dollars) as gs_m12, 
+	count(distinct order_number) as orders_m12
+	
+From
+	Any.RESPOND_ORDERS 
+where m12=1
+group by 1
+;
+quit;
+
+/*Promo User Flag (should not include Free Ship)*/
+
+data ANY.FS_CODES                                  ;
+%let _EFIERR_ = 0; /* set the ERROR detection macro variable */
+infile '\\jxn-ms-sas\direct\Nivy\Category Profile\FREE_SHIP_CODES.csv' delimiter = ',' MISSOVER DSD lrecl=32767 firstobs=2 ;
+informat Code $11. ;
+format Code $11. ;
+input
+Code $
+;
+if _ERROR_ then call symputx('_EFIERR_',1);  /* set ERROR detection macro variable */
+FS_IND=1; 
+run;
+
+PROC SORT DATA=ANY.FS_CODES; BY CODE;RUN;
+
+
+/*GETTING PROMO ORDERS AND ORDERS TABLE */
+
+PROC SQL;
+CREATE TABLE ANY.promo_orders AS
+SELECT DISTINCT A.*, promo_id_01, promo_id_02, promo_id_03,promo_id_04, promo_id_05
+FROM sddb.promo_orders A INNER JOIN ANY.RESPOND_ORDERS B ON A.ORDERnum=B.ORDER_NUMBER;
+QUIT;
+
+proc sql;
+create table ANY.promo_orders as
+select 
+	distinct 
+		a.*, b. FS_IND 
+from
+	ANY.promo_orders a left join ANY.FS_CODES b
+	on (a.promo_id_01 = b. Code) 
+		or (a.promo_id_02 = b. Code)  
+		or (a.promo_id_03 = b. Code) 
+		or (a.promo_id_04 = b. Code) 
+		or (a.promo_id_05 = b. Code);
+quit;
+
+
+
+/*proc sql;*/
+/*select count(distinct (case when fs_ind=1 then order_number end)), count(distinct order_number) from ANY.promo_orders;*/
+/*quit;*/
+/* 1605189   1773012*/
+
+/*proc sql;*/
+/*select  count(distinct order_number) from ANY.RESPOND_ORDERS;*/
+/*quit;*/
+/* 2457040*/
+
+
+
+data any.promo_orders ;                                                    
+set any.promo_orders  ;  
+IF FS_IND NE 1 THEN OTHER_CODE=1;
+IF PROMO_ID_02 NE '' THEN OTHER_CODE=1;
+RUN;
+;
+/*DATA ANY.RESPOND_ORDERS ;*/
+/*SET ANY.RESPOND_ORDERS ;*/
+/*DROP FS_IND OTHER_CODE;*/
+/*RUN;*/
+
+proc sql;
+create table RESPOND_ORDERS_promo as 
+SELECT DISTINCT A.INDIVIDUAL_ID,A.ORDER_NUMBER,A.ORDERDATE, B. OTHER_CODE,  A.M12
+FROM ANY.RESPOND_ORDERS A LEFT JOIN any.promo_orders B ON A.ORDER_NUMBER=B.ORDERNUM
+/*WHERE A.CHANNEL='OL'*/
+;
+/*union*/
+/*SELECT DISTINCT A.EMAIL_ADDRESS,A.ORDER_NUMBER,A.ORDERDATE, B. OTHER_CODE,A.CHANNEL, A.M12*/
+/*FROM ANY.RESPOND_ORDERS A LEFT JOIN  STR_PROMO B ON A.ORDER_NUMBER=B.ORDER_NUMBER AND A.ORDERDATE=B.ORDERDATE*/
+/*WHERE A.CHANNEL='STR';*/
+QUIT;
+
+
+PROC SQL;
+CREATE TABLE ANY.PROMO_USER_FLAG_12M AS
+SELECT
+	DISTINCT INDIVIDUAL_ID,
+	COUNT(DISTINCT ORDER_NUMBER) AS ORDERS,
+	COUNT(DISTINCT (CASE WHEN OTHER_CODE=1 THEN ORDER_NUMBER END ))/COUNT(DISTINCT ORDER_NUMBER) AS promo_code_penetration,
+	COUNT
+		(DISTINCT (CASE WHEN M12=1 AND OTHER_CODE=1 THEN ORDER_NUMBER END )/(CASE WHEN M12=1 THEN ORDER_NUMBER END )) AS promo_code_penetration_m12
+FROM
+	RESPOND_ORDERS_promo
+GROUP BY 1;
+QUIT;
+
+
+
+
+proc sql;
+create table any.sf_flag as
+select
+	distinct
+		INDIVIDUAL_ID,
+		saks_first_indicator
+from
+	any.respond_orders
+where
+	saks_first_indicator=1;
+quit;
+
+proc sql;
+select distinct max_cut_off from any.respond_orders;quit;
+
+/*                                               MAX_CUT_OFF*/
+/*                                      ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ*/
+/*                                        24NOV2012:00:00:00*/
+/*                                        30NOV2013:00:00:00*/
+/*                                        29NOV2014:00:00:00*/
+/*MAX_CUT_OFF */
+/*02MAR2013 */
+/*01MAR2014 */
+/*28FEB2015 */
+
+/**/
+/**/
+/*%let cut_off_1_vip=12022014;*/
+/*%let cut_off_2_vip=12012015;*/
+/*%let cut_off_3_vip=09062016;*/
+/*%let NON_CUT_OFF_END_vip=09062016;*/
+/**/
+/*data master_file;*/
+/*set vip.master_file;*/
+/*keep individual_id status_&cut_off_1_vip. status_&cut_off_2_vip. status_&cut_off_3_vip. status_&NON_CUT_OFF_END_vip.;*/
+/*run;*/
+/**/
+/*/*proc sql;*/*/
+/*/*create table master_file as*/*/
+/*/*select distinct a.*, b. email_address*/*/
+/*/*from master_file a inner join sddb.customer b on a.individual_id=b.individual_id*/*/
+/*/*where a.individual_id not in (0,.,999999999);*/*/
+/*/*quit;*/*/
+/**/
+/**/
+/*/*data master_file;*/*/
+/*/*set master_file;*/*/
+/*/*keep email_address status_&cut_off_1_vip. status_&cut_off_2_vip. status_&cut_off_3_vip. status_&NON_CUT_OFF_END_vip.;*/*/
+/*/*run;*/*/
+/**/
+/*/*proc sql;*/*/
+/*/*create table master_file as*/*/
+/*/*select */*/
+/*/*	distinct */*/
+/*/*		email_address ,*/*/
+/*/*		status_&cut_off_1_vip. ,*/*/
+/*/*		status_&cut_off_2_vip. ,*/*/
+/*/*		status_&cut_off_3_vip. ,*/*/
+/*/*		status_&NON_CUT_OFF_END_vip.*/*/
+/*/*from master_file;*/*/
+/*/*quit;*/*/
+/**/
+/*/*proc sql;select count(distinct email_address) as emls, count(*) as obs from master_file;quit;*/*/
+/*data master_file;*/
+/*set master_file;*/
+/*if status_&cut_off_1_vip. ='' then status_&cut_off_1_vip._V=0;*/
+/*if status_&cut_off_1_vip. ='S' then status_&cut_off_1_vip._V=1;*/
+/*if status_&cut_off_1_vip. ='M' then status_&cut_off_1_vip._V=2;*/
+/*if status_&cut_off_1_vip. ='T' then status_&cut_off_1_vip._V=3;*/
+/**/
+/**/
+/*if status_&cut_off_2_vip. ='' then status_&cut_off_2_vip._V=0;*/
+/*if status_&cut_off_2_vip. ='S' then status_&cut_off_2_vip._V=1;*/
+/*if status_&cut_off_2_vip. ='M' then status_&cut_off_2_vip._V=2;*/
+/*if status_&cut_off_2_vip. ='T' then status_&cut_off_2_vip._V=3;*/
+/**/
+/**/
+/*if status_&cut_off_3_vip. ='' then status_&cut_off_3_vip._V=0;*/
+/*if status_&cut_off_3_vip. ='S' then status_&cut_off_3_vip._V=1;*/
+/*if status_&cut_off_3_vip. ='M' then status_&cut_off_3_vip._V=2;*/
+/*if status_&cut_off_3_vip. ='T' then status_&cut_off_3_vip._V=3;*/
+/**/
+/**/
+/*if status_&NON_CUT_OFF_END_vip. ='' then status_&NON_CUT_OFF_END_vip._V=0;*/
+/*if status_&NON_CUT_OFF_END_vip. ='S' then status_&NON_CUT_OFF_END_vip._V=1;*/
+/*if status_&NON_CUT_OFF_END_vip. ='M' then status_&NON_CUT_OFF_END_vip._V=2;*/
+/*if status_&NON_CUT_OFF_END_vip. ='T' then status_&NON_CUT_OFF_END_vip._V=3;*/
+/**/
+/*run;*/
+/**/
+/*proc sort data=master_file; */
+/*by individual_id descending status_&cut_off_1_vip._V  descending status_&cut_off_2_vip._V descending status_&cut_off_3_vip._V descending status_&NON_CUT_OFF_END_vip._V;run;*/
+/**/
+/**/
+/**/
+/**/
+/*proc sql;*/
+/*create table any.vip_status as*/
+/*select*/
+/*	a.individual_id,*/
+/*	b.status_&cut_off_1_vip. as vip_status  /*vip starting from Oct2012*/*/
+/*from*/
+/*	any.respond_orders a inner join master_file b on a.individual_id=b.individual_id*/
+/*where */
+/*	max_cut_off="&cut_off_1."d*/
+/*union*/
+/*select*/
+/*	a.individual_id,*/
+/*	b.status_&cut_off_2_vip. as vip_status*/
+/*from*/
+/*	any.respond_orders a inner join master_file b on a.individual_id=b.individual_id*/
+/*where*/
+/*	max_cut_off="&cut_off_2."d*/
+/*union*/
+/*select*/
+/*	a.individual_id,*/
+/*	b.status_&cut_off_3_vip. as vip_status*/
+/*from*/
+/*	any.respond_orders a inner join master_file b on a.individual_id=b.individual_id*/
+/*where*/
+/*	max_cut_off="&cut_off_3."d*/
+/*union*/
+/*select*/
+/*	a.individual_id,*/
+/*	b.status_&NON_CUT_OFF_END_vip. as vip_status*/
+/*from*/
+/*	any.respond_orders a inner join master_file b on a.individual_id=b.individual_id*/
+/*where*/
+/*	max_cut_off="&NON_CUT_OFF_end."D*/
+/*;*/
+/*quit;*/
+/**/
+/**/
+/**/
+/**/
+/*/*P1 Flag*/*/;
+
+proc sort data= any.respond_orders ; by individual_id orderdate order_number ;run;
+;
+
+data p1_flag;
+set any.respond_orders;
+by individual_id orderdate order_number ;
+
+if first.individual_id=1 then do;
+	cat1=.;
+	cat2=.;
+	cat3=.;
+	cat4=.;
+	cat5=.;
+	cat6=.;
+	cat7=.;
+	cat8=.;
+	cat9=.;
+	cat10=.;
+	cat11=.;
+	cat12=.; 
+/*	cat13=.;*/
+	sz=.;
+	sj=.;
+	cat1_itms=.;
+	cat2_itms=.;
+	cat3_itms=.;
+	cat4_itms=.;
+	cat5_itms=.;
+	cat6_itms=.;
+	cat7_itms=.;
+	cat8_itms=.;
+	cat9_itms=.;
+	cat10_itms=.;
+	cat11_itms=.;
+	cat12_itms=.;
+/*	cat13_itms=.;*/
+	sz_itms=.;
+	sj_itms=.;
+	demand=.;
+	cat1_pc=.;
+	cat2_pc=.;
+	cat3_pc=.;
+	cat4_pc=.;
+	cat5_pc=.;
+	cat6_pc=.;
+	cat7_pc=.;
+	cat8_pc=.;
+	cat9_pc=.;
+	cat10_pc=.;
+	cat11_pc=.;
+	cat12_pc=.;
+/*	cat13_pc=.;*/
+	sj_pc=.;
+	sz_pc=.;
+	aff=.;
+	aff2=.;
+	count=.;
+	pc=.;
+	orders=.;
+	itms=.;
+	format cat_pref1 $20.;
+	sz_flag=.;
+
+
+	
+
+	cat1+0;
+	cat2+0;
+	cat3+0;
+	cat4+0;
+	cat5+0;
+	cat6+0;
+	cat7+0;
+	cat8+0;
+	cat9+0;
+	cat10+0;
+	cat11+0;
+	cat12+0;
+/*	cat13+0;*/
+	sz+0;
+	sj+0;
+	cat1_itms+0;
+	cat2_itms+0;
+	cat3_itms+0;
+	cat4_itms+0;
+	cat5_itms+0;
+	cat6_itms+0;
+	cat7_itms+0;
+	cat8_itms+0;
+	cat9_itms+0;
+	cat10_itms+0;
+	cat11_itms+0;
+	cat12_itms+0;
+/*	cat13_itms+0;*/
+	sz_itms=.;
+	sj_itms=.;
+	demand+0;
+	cat1_pc+0;
+	cat2_pc+0;
+	cat3_pc+0;
+	cat4_pc+0;
+	cat5_pc+0;
+	cat6_pc+0;
+	cat7_pc+0;
+	cat8_pc+0;
+	cat9_pc+0;
+	cat10_pc+0;
+	cat11_pc+0;
+	cat12_pc+0;
+/*	cat13_pc+0;*/
+	sj_pc+0;
+	sz_pc+0;
+	aff+0;
+	aff2+0;
+	count+0;
+	pc+0;
+	orders+0;
+	itms+0;
+	sz_flag+0;
+	
+	
+end;
+if first.order_number=1 then do;
+	orders+1;
+end;
+
+	
+if order_line_status in ('D','R','X')  then do; /*calc demand for salon z*/
+	if group_id in (8) then sz_flag=1;
+end;
+	
+if order_line_status ='D'  then do; /*calc net sales by cat */
+	demand+demand_dollars;
+	
+	if group_id in (10, 16, 20, 22, 23, 24 ) then do; /*sj added by NS to avoid P1=P2=3 situation*/
+		cat1+demand_dollars;
+		cat1_itms+demand_units;
+	end;
+	if group_id in (9) then do;  /*st john*/
+		sj+demand_dollars;
+		sj_itms+demand_units;
+	end;
+	if group_id in (25) then do;/*Contp*/
+		cat2+demand_dollars;
+		cat2_itms+demand_units;
+	end;
+	if group_id in (15) then do; /* altered to only keep WEAR group id */
+		cat3+demand_dollars;
+		cat3_itms+demand_units;
+	end;
+	if group_id in (36) then do;
+		cat4+demand_dollars;
+		cat4_itms+demand_units;
+	end;
+	if group_id in (39) then do;
+		cat5+demand_dollars;
+		cat5_itms+demand_units;
+	end;
+	if group_id in (13, 18, 55) then do;
+		cat6+demand_dollars;
+		cat6_itms+demand_units;
+	end;
+	if group_id in (19) then do;
+		cat7+demand_dollars;
+		cat7_itms+demand_units;
+	end;
+	if group_id in (28,29) then do;
+		cat8+demand_dollars;
+		cat8_itms+demand_units;
+	end;
+	if group_id in (5,30, 31, 33, 34, 62, 63,64, 66) then do;
+		cat9+demand_dollars;
+		cat9_itms+demand_units;
+	end;
+	if group_id in (35) then do;
+		cat10+demand_dollars;
+		cat10_itms+demand_units;
+	end;
+	if group_id in (27, 65,38) then do; /* includes Gifts */
+		cat11+demand_dollars;
+		cat11_itms+demand_units;
+	end;
+
+	if group_id in (8) then do; /* salon z*/
+		sz+demand_dollars;
+		sz_itms+demand_units;
+	end;
+
+	if group_id in (7, 11, 14, 60, 37) then do; /* all other women's apparel, removed 8 from here */
+		cat12+demand_dollars;
+		cat12_itms+demand_units;
+	end;
+end;
+
+if last.individual_id=1 then do;
+	if demand gt 0 then do;
+		cat1_pc=cat1/demand;
+		sj_pc=sj/demand;
+		cat2_pc=cat2/demand;
+		cat3_pc=cat3/demand;
+		cat4_pc=cat4/demand;
+		cat5_pc=cat5/demand;
+		cat6_pc=cat6/demand;
+		cat7_pc=cat7/demand;
+		cat8_pc=cat8/demand;
+		cat9_pc=cat9/demand;
+		cat10_pc=cat10/demand;
+		cat11_pc=cat11/demand;
+		sz_pc=sz/demand;
+
+		/* calculates for higher than median */
+/*		Benchmarks for each category updated after every fiscal year ends*/
+		if cat1 gt 575 and cat1_itms gt 1 then do;
+			aff=1;
+			count+1;
+		end;
+		if sj gt 485 and sj_itms gt 1 then do;
+			aff=13;
+			count+1;
+		end;
+		if cat2 gt 219 and cat2_itms gt 1 then do;
+			aff=2;
+			count+1;
+		end;
+		if cat3 gt 214 and cat3_itms gt 1 then do;
+			aff=3;
+			count+1;
+		end;
+		if cat4 gt 290 and cat4_itms gt 1 then do;
+			aff=4;
+			count+1;
+		end;
+		if cat5 gt 315 and cat5_itms gt 1 then do;
+			aff=5;
+			count+1;
+		end;
+		if cat6 gt 180 and cat6_itms gt 1 then do;
+			aff=6;
+			count+1;
+		end;
+		if cat7 gt 130 and cat7_itms gt 1 then do;
+			aff=7;
+			count+1;
+		end;
+		if cat8 gt 105 and cat8_itms gt 2 then do;
+			aff=8;
+			count+1;
+		end;
+		if cat9 gt 172 and cat9_itms gt 1 then do;
+			aff=9;
+			count+1;
+		end;
+		if cat10 gt 94 and cat10_itms gt 1 then do;
+			aff=10;
+			count+1;
+		end;
+		if cat11 gt 74 and cat11_itms gt 1 then do;
+			aff=11;
+
+count+1;
+		end;
+
+		if sz gt 276 and sz_itms gt 2 then do;
+			aff=12;
+			count+1;
+		end;
+
+		if count gt 1 then do;
+			if cat1_pc gt pc then do; pc=cat1_pc; aff=1; end; /* combining designer & sj */
+	  		if sj_pc   gt pc then do; pc=sj_pc;   aff=1; end;  
+			if cat2_pc gt pc then do; pc=cat2_pc; aff=2; end;
+			if cat3_pc gt pc then do; pc=cat3_pc; aff=3; end;
+			if cat4_pc gt pc then do; pc=cat4_pc; aff=4; end; /* combining shoes & handbags */
+			if cat5_pc gt pc then do; pc=cat5_pc; aff=4; end;
+			if cat6_pc gt pc then do; pc=cat6_pc; aff=6; end;
+			if cat7_pc gt pc then do; pc=cat7_pc; aff=6; end; /* combining jewelry and access */
+			if cat8_pc gt pc then do; pc=cat8_pc; aff=8; end;
+			if cat9_pc gt pc then do; pc=cat9_pc; aff=9; end;
+			if cat10_pc gt pc then do; pc=cat10_pc; aff=10; end;
+			if cat11_pc gt pc then do; pc=cat11_pc; aff=11; end;
+			if sz_pc gt pc then do; pc=sz_pc; aff=12; end;
+		end;	
+
+		if aff = 0 and orders = 1 then do;
+			pc=0;
+			if cat1_pc gt pc then do; pc=cat1_pc; aff=1; end;
+			if sj_pc gt pc   then do; pc=sj_pc;   aff=1; end;  /*Combining St John into Cat 1*/
+			if cat2_pc gt pc then do; pc=cat2_pc; aff=2; end;
+			if cat3_pc gt pc then do; pc=cat3_pc; aff=3; end;
+			if cat4_pc gt pc then do; pc=cat4_pc; aff=4; end;
+			if cat5_pc gt pc then do; pc=cat5_pc; aff=4; end;
+			if cat6_pc gt pc then do; pc=cat6_pc; aff=6; end;
+			if cat7_pc gt pc then do; pc=cat7_pc; aff=6; end;
+			if cat8_pc gt pc then do; pc=cat8_pc; aff=8; end;
+			if cat9_pc gt pc then do; pc=cat9_pc; aff=9; end;
+			if cat10_pc gt pc then do; pc=cat10_pc; aff=10; end;
+			if cat11_pc gt pc then do; pc=cat11_pc; aff=11; end;
+			if sz_pc gt pc then do; pc=sz_pc; aff=12; end;
+		end;	
+
+		if aff = 0 and orders gt 1 then do;
+			itms=0;
+			if cat1_itms gt itms then do; itms=cat1_itms; aff=1; end;
+			if sj_itms   gt itms then do; itms=sj_itms;   aff=1; end;  /*Combining St John into Cat 1*/
+			if cat2_itms gt itms then do; itms=cat2_itms; aff=2; end;
+			if cat3_itms gt itms then do; itms=cat3_itms; aff=3; end;
+			if cat4_itms gt itms then do; itms=cat4_itms; aff=4; end;
+			if cat5_itms gt itms then do; itms=cat5_itms; aff=4; end;
+			if cat6_itms gt itms then do; itms=cat6_itms; aff=6; end;
+			if cat7_itms gt itms then do; itms=cat7_itms; aff=6; end;
+			if cat8_itms gt itms then do; itms=cat8_itms; aff=8; end;
+			if cat9_itms gt itms then do; itms=cat9_itms; aff=9; end;
+			if cat10_itms gt itms then do; itms=cat10_itms; aff=10; end;
+			if cat11_itms gt itms then do; itms=cat11_itms; aff=11; end;
+			if sz_itms gt itms then do; itms=sz_itms; aff=12; end;
+
+		end;	
+
+		if aff gt 0 then do;
+			if aff=1 then cat_pref1='Designer';
+			if aff=13 then cat_pref1='Designer';
+			if aff=2 then cat_pref1='Contemp';
+			if aff=3 then cat_pref1='Wear';
+			if aff=4 then cat_pref1='S&H';
+			if aff=5 then cat_pref1='S&H';
+			if aff=6 then cat_pref1='Jewelry & Access';
+			if aff=7 then cat_pref1='Jewelry & Access';
+			if aff=8 then cat_pref1='Beauty & Fragrance';
+			if aff=9 then cat_pref1='Mens';
+			if aff=10 then cat_pref1='Kids';
+			if aff=11 then cat_pref1='Home/Gourmet/Gifts';
+			if aff=12 then cat_pref1='Salon Z';
+		end;
+	end;
+	if aff=0 then cat_pref1='UNSCORED'; /*assigns preference to all other women's apparel and net sales = $0 */
+
+	keep 	individual_id 	
+			cat1_pc
+			sj_pc
+			cat2_pc
+			cat3_pc
+			cat4_pc
+			cat5_pc
+			cat6_pc
+			cat7_pc
+			cat8_pc
+			cat9_pc
+			cat10_pc
+			cat11_pc
+			sz_pc
+			sz_flag
+			cat_pref1;
+			output;
+end;
+run;
+
+
+data p1_flag;
+set p1_flag; 
+by individual_id;
+	if cat_pref1 in ('Beauty & Fragrance','Contemp','Designer','Home/Gourmet/Gifts','Kids','Mens',
+'Salon Z','S&H','Wear','Jewelry & Access','St John','UNSCORED') then do;
+
+
+
+
+		if cat_pref1 in ('Beauty & Fragrance') then P1=1;
+		if cat_pref1 in ('Contemp') then P1=2;
+		if cat_pref1 in ('Designer') then P1=3;
+		if cat_pref1 in ('Home/Gourmet/Gifts') then P1=4;
+		if cat_pref1 in ('Kids') then P1=5;
+		if cat_pref1 in ('Mens') then P1=6;
+		if cat_pref1 in ('Salon Z') then P1=7;
+		if cat_pref1 in ('S&H') then P1=8;
+		if cat_pref1 in ('Wear') then P1=9;
+		if cat_pref1 in ('Jewelry & Access') then P1=10;
+		if cat_pref1 in ('UNSCORED') then P1=0;
+
+/*		if cat_pref1 in ('St John') then P1=3;*/
+
+
+end;
+
+run;
+
+data any.p1_flag;
+set work.p1_flag;
+keep individual_id p1;
+run;
+
+/*Emailable Flag*/
+PROC SQL;
+CREATE TABLE ANY. CM_IND_EML AS
+SELECT DISTINCT individual_id , 1 as emailable_flag 
+FROM SDDB.EMAIL_CHEETAH_SEGMENTS a inner join sddb.customer b on a. email_address=b.email_address
+where b. individual_id not in (.,0,999999999);
+QUIT;
+
+/*Curated Sale Flag*/
+
+/**/
+/*PROC SQL;*/
+/*CREATE TABLE any. CURATED_SALE AS*/
+/*SELECT DISTINCT INDIVIDUAL_ID, 1 as curated_sale_flag FROM   SALE. CURATED_SALE_EMAILS_09052013 A INNER JOIN SDDBCOPY.CUSTOMER B ON A.EMAIL_ADDRESS=B.EMAIL_ADDRESS;*/
+/*QUIT;*/
+
+DATA ANY.RESPOND_ORDERS;
+SET ANY.RESPOND_ORDERS;
+IF DEMAND_DOLLARS<0.8*SKU_LIST_PRICE*DEMAND_UNITS THEN SALE_FLAG=1;ELSE SALE_FLAG=0;
+GAP_ORDERDT_CUT_OFF=ABS(INTCK('MONTH', (ORDERDATE), (MAX_CUT_OFF)));
+RUN;
+
+DATA ANY.RESPOND_ORDERS;
+SET ANY.RESPOND_ORDERS;
+IF GAP_ORDERDT_CUT_OFF <=12 THEN GAP_FLAG=1;
+ELSE IF 12<GAP_ORDERDT_CUT_OFF <=24 THEN GAP_FLAG=2;
+ELSE IF 24<GAP_ORDERDT_CUT_OFF <=36 THEN GAP_FLAG=3;
+ELSE IF 36<GAP_ORDERDT_CUT_OFF <=48 THEN GAP_FLAG=4;
+ELSE IF 48<GAP_ORDERDT_CUT_OFF <=60 THEN GAP_FLAG=5;
+RUN;
+
+PROC SQL;
+CREATE TABLE ANY.SALE_FLAG_BY_GAP_FLAG AS
+SELECT
+	DISTINCT 
+		individual_id, GAP_FLAG, MAX(SALE_FLAG) AS SALE_FLAG_GAP
+FROM
+	ANY.RESPOND_ORDERS
+WHERE GAP_FLAG IS NOT NULL
+GROUP BY 
+	1,2;
+QUIT;
+
+PROC SQL;
+CREATE TABLE ANY.SALE_FLAG AS
+SELECT
+	DISTINCT individual_id, COUNT(CASE WHEN SALE_FLAG_GAP=1 THEN SALE_FLAG_GAP END) AS SALE_FLAG_CT
+FROM
+	ANY.SALE_FLAG_BY_GAP_FLAG
+GROUP  BY 1;
+QUIT;
+
+proc sql;
+create table any.master_xs as
+select
+	distinct 
+	a.*,
+	b.tsfp,
+	b.tslp,
+	c.gs_lord,
+	d.orders_m12,
+	d.gs_m12,
+	f.orders,
+	f.promo_code_penetration,
+	f.promo_code_penetration_m12,
+	g.saks_first_indicator,
+	i.p1,
+	j.emailable_flag,
+	k.SALE_FLAG_CT
+/*,*/
+/*	h.vip_status	*/
+from
+	any.master a 
+	INNER join any.tsfp_tslp b on a.individual_id=b.individual_id
+	left join any.spend_recent_purchase c on a.individual_id=c.individual_id
+	left join any.spend_last_12m d on a.individual_id=d.individual_id
+	left join any.promo_user_flag_12m f on a.individual_id=f.individual_id
+	left join any.sf_flag g on a.individual_id=g.individual_id
+	LEFT JOIN any.vip_status h on a.individual_id=h.individual_id
+	left join any.p1_flag i on a.individual_id=i.individual_id
+	left join any.cm_ind_eml j on a.individual_id=j.individual_id
+	left join any.SALE_FLAG k on a.individual_id=k.individual_id;
+;
+quit;
+
+/*PROC SQL;*/
+/*SELECT COUNT(DISTINCT EMAIL_ADDRESS) AS EMLS FROM ANY.MASTER_XS;*/
+/*QUIT;*/
+
+
+data any.master_xs ;
+set any.master_xs ;
+if vip_status ='' then vip_status='Z';
+array testmiss(*)gs_lord--sale_flag_CT;
+  do i = 1 to dim(testmiss);                                              
+    if testmiss(i)=. then testmiss(i)=0;
+  end;                                                                    
+run; 
+
+
+/*(Total Spend in most recent purchase prior to Max_Cut_Off / Total Spend in 12 months prior to Max_Cut_Off)*/
+
+data any.master_xs ;
+set any.master_xs ;
+spending_lord_m12=gs_lord/gs_m12;
+run;
+
+
+data any.master_xs ;
+set any.master_xs ;
+if SPENDING_LORD_M12=. then SPENDING_LORD_M12=0;
+run; 
+
+
+proc contents data=any.master_xs;run;
+
+
+
+
+/* Category*/
+/* ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ*/
+/**/
+/* 01 Beauty & Fragrance*/
+/* 02 Contemp*/
+/* 03 Designer*/
+/* 04 Home/Gourmet/Gifts*/
+/* 05 Kids*/
+/* 06 Mens*/
+/* 07 Salon Z*/
+/* 08 S&H*/
+/* 09 Wear*/
+/* 10 Jewelry & Access*/
+/* 11 All Other*/
+/* 12 FashionFix*/
+
+data ANY.RESPOND_ORDERS;
+set ANY.RESPOND_ORDERS;
+/*drop cat_rev;*/
+/*run;*/
+
+format cat_rev $20.;
+informat cat_rev $20.;
+length cat_rev $20.;
+if category in ('02 Contemp','03 Designer','09 Wear','07 Salon Z') then cat_rev='WomenApparel';
+if category in ('12 FashionFix','11 All Other','04 Home/Gourmet/Gifts') then cat_rev='Others';
+if category in ('06 Mens') then cat_rev='Mens';
+if category in ('05 Kids') then cat_rev='Kids';
+if category in ('10 Jewelry & Access') then cat_rev='JewelryAccess';
+if category in ('01 Beauty & Fragrance') then cat_rev='BeautyFragrance';
+if category in ('08 S&H') then cat_rev='ShoesHandbags';
+run;
+/*WomenApparel Others Mens Kids JewelryAccess BeautyFragrance ShoesHandbags*/
+
+
+
+proc sql;
+create table any.tslp_cat as
+select
+	distinct 
+	individual_id,
+	cat_rev,
+	abs(intck('month', (max(orderdate)), (max_cut_off))) as tslp
+from
+	any.respond_orders
+group by 1,2;
+quit;
+
+proc transpose data=any.tslp_cat 
+out=any.tslp_cat_t;
+by individual_id;
+id cat_rev;
+var tslp;
+run;
+
+data any.tslp_cat_t_rev;
+set any.tslp_cat_t;
+/*array  testmiss(*)JewelryAccess--BeautyFragrance;*/
+array  testmiss(*)BeautyFragrance--Mens;
+
+  do i = 1 to dim(testmiss);                                              
+	if testmiss(i)=0 then testmiss(i)=0;
+	else IF testmiss(i) GT 0 AND testmiss(i) LE 1 THEN testmiss(i) = 1; 
+	ELSE IF testmiss(i) GT 1 AND testmiss(i) LE 3 THEN testmiss(i) = 2;
+	ELSE IF testmiss(i) GT 3 AND testmiss(i) LE 6 THEN testmiss(i) = 3;
+	ELSE IF testmiss(i) GT 6 AND testmiss(i) LE 9 THEN testmiss(i) = 4;
+	ELSE IF testmiss(i) GT 9 AND testmiss(i) LE 12 THEN testmiss(i) = 5;
+	ELSE IF testmiss(i) GT 12 AND testmiss(i) LE 18 THEN testmiss(i) = 6;
+	ELSE IF testmiss(i) GT 18 AND testmiss(i) LE 36 THEN testmiss(i) = 7;
+	ELSE IF testmiss(i) GT 36 AND testmiss(i) LE 48 THEN testmiss(i) = 8;
+	ELSE IF testmiss(i) GT 48 AND testmiss(i) LE 72 THEN testmiss(i) = 9;
+	ELSE IF testmiss(i) GT 72 THEN testmiss(i) = 10;
+    if testmiss(i)=. then testmiss(i)=11;
+;
+  end;                                                                    
+run; 
+
+data ANY.MASTER_XS;
+set ANY.MASTER_XS;
+drop WomenApparel 
+	 Others 
+	Mens 
+	Kids
+	JewelryAccess 
+	BeautyFragrance
+	ShoesHandbags;
+run;
+
+
+PROC SQL;
+CREATE TABLE ANY.MASTER_XS AS
+SELECT 	DISTINCT A.*, 
+		B.WomenApparel ,
+		B.Others ,
+		B.Mens ,
+		B.Kids ,
+		B.JewelryAccess ,
+		B.BeautyFragrance, 
+		B.ShoesHandbags
+FROM
+	ANY.MASTER_XS A LEFT JOIN any.tslp_cat_t_rev B ON A.individual_id=B.individual_id;
+QUIT;
+
+data ANY.MASTER_XS ;
+set ANY.MASTER_XS ;
+array  testmiss(*)WomenApparel--ShoesHandbags;
+  do i = 1 to dim(testmiss);                                              
+    if testmiss(i)=. then testmiss(i)=11;
+   END;
+RUN;
+
+proc sort data=ANY.MASTER_XS ; by tslp;run;
+
+data ANY.MASTER_XS ;
+set ANY.MASTER_XS ;
+where tslp ne .;
+run;
+
+
+
+/**/
+/*proc sql;*/
+/*create table any.tslp_cat_t_rev as* /
+/*select */
+/*	distinct */
+/*	a. individual_id, */
+/*	a. BeautyFragrance, */
+/*	a. Mens, 	*/
+/*	a. JewelryAccess, */
+/*	a. Kids, */
+/*	a. others , */
+/*	a. ShoesHandbags,*/
+/*	a. BeautyFragrance_rev ,*/
+/*	a.  Mens_rev ,*/
+/*	a.  JewelryAccess_rev ,*/
+/*	a.  Kids_rev ,*/
+/*	a. others_rev ,*/
+/*	a. ShoesHandbags_rev */
+/*from */
+/*	any.tslp_cat_t_rev a ;*/
+/*quit;*/
+
+
+
+
+proc sql;
+create table any.previous_&month._purchase as
+select
+	distinct 
+	individual_id,
+	count(distinct order_number) as pre_&month._times
+from
+	any.respond_orders
+where month_number=&month. 
+group by 1;
+quit;
+
+
+proc sql;
+create table any.previous_&last_month._purchase as
+select
+	distinct 
+	individual_id,
+	count(distinct order_number) as pre_&month._times_last
+from
+	any.respond_orders
+where month_number=&last_month.  and year(orderdate)<year(max_cut_off)
+group by 1;
+quit;
+
+
+
+proc sql;
+create table any.previous_&last_month._purchase_ty as
+select
+	distinct 
+	individual_id,
+	1 as pre_month_purchase
+from
+	any.respond_orders
+where month_number=&last_month.  and year(orderdate)=year(max_cut_off)
+group by 1;
+quit;
+
+
+proc sql;
+create table any.master_xs  as
+select a.*, b.pre_&month._times_last
+from any.master_xs a 
+left join any.previous_&last_month._purchase  b on a.individual_id=b.individual_id;
+quit;
+
+data any.master_xs;
+set  any.master_xs;
+if pre_&month._times_last =. then pre_&month._times_last=0;
+if pre_&month._times_last>=6 then pre_&month._times_last=6;
+run;
+
+
+DATA any.master_xs ;
+SET any.master_xs ;
+DROP pre_&month._times;
+RUN;
+
+
+proc sql;
+create table any.master_xs as
+select distinct a.*, b. pre_&month._times
+from any.master_xs a left join any.previous_&month._purchase b on a.individual_id=b.individual_id;
+quit;
+
+data any.master_xs;
+set  any.master_xs;
+if pre_&month._times =. then pre_&month._times=0;
+if pre_&month._times>=6 then pre_&month._times=6;
+run;
+
+
+data any.master_xs1 ;
+set any.master_xs ;
+WHERE TSLP NE .;
+if spending_lord_m12 = . then spending_lord_m12 = 0;
+if spending_lord_m12 = 0 then L_SOW = 99999999999;
+IF spending_lord_m12 NE 0 AND spending_lord_m12 NE . THEN  L_SOW = LOG(spending_lord_m12);
+
+IF TSLP = TSFP THEN SINGLE = 1; ELSE SINGLE = 0;
+IF TSLP Ge 0 AND TSLP LE 1 THEN SHOP_0_1 = 1; 
+ELSE IF TSLP GT 1 AND TSLP LE 3 THEN SHOP_2_3 = 1;
+ELSE IF TSLP GT 3 AND TSLP LE 6 THEN SHOP_4_6 = 1;
+ELSE IF TSLP GT 6 AND TSLP LE 9 THEN SHOP_7_9 = 1;
+ELSE IF TSLP GT 9 AND TSLP LE 12 THEN SHOP_10_12 = 1;
+ELSE IF TSLP GT 12 AND TSLP LE 18 THEN SHOP_11_18 = 1;
+ELSE IF TSLP GT 18 AND TSLP LE 36 THEN SHOP_19_36 = 1;
+ELSE IF TSLP GT 36 THEN SHOP_36P = 1;
+run;
+
+DATA any.MASTER_XS1;
+SET any.MASTER_XS1;
+array testmiss(*)SHOP_0_1--SHOP_36P;
+  do i = 1 to dim(testmiss);                                              
+    if testmiss(i)=. then testmiss(i)=0;
+  end;
+RUN; 
+
+/*proc sql;*/
+/*create table any.master_xs1 as*/
+/*select*/
+/*	distinct a.*, */
+/*	b.**/
+/*from*/
+/*	any.master_xs1 a left join any.tslp_cat_t b on a.individual_id=b.individual_id ;;*/
+/*quit;*/
+
+
+/**/
+/*PROC SQL;*/
+/*CREATE TABLE ANY.PRE_&MONTH._CHECK AS*/
+/*SELECT DISTINCT INDIVIDUAL_ID, RESPONDER, PRE_&MONTH._times, tslp*/
+/*FROM any.master_xs1*/
+/*where responder =0 and PRE_&MONTH._times >=1;*/
+/*QUIT;*/
+
+
+
+/*AVERAGE ORDER GAP*/
+PROC SQL;
+CREATE TABLE ANY.ID_ORDERDATE AS
+SELECT DISTINCT individual_id, (ORDERDATE)  FORMAT DATE9. FROM ANY.RESPOND_ORDERS 
+ORDER BY 1,2;
+QUIT;
+
+DATA ANY.ID_ORDERDATE;
+SET ANY.ID_ORDERDATE;
+BY individual_id;
+GAP=ABS(INTCK('MONTH', ORDERDATE, LAG(ORDERDATE)));
+IF FIRST.individual_id=1 THEN DO ;
+GAP=.;
+END;
+RUN;
+
+PROC SQL;
+CREATE TABLE ANY.ID_GAP AS
+SELECT
+	DISTINCT
+		individual_id,
+		AVG(GAP) AS AVG_GAP
+FROM
+	ANY.ID_ORDERDATE
+GROUP BY 1;
+QUIT;
+
+DATA ANY.ID_GAP;
+SET ANY.ID_GAP;
+IF AVG_GAP >=0 and AVG_GAP <=1 THEN AVG_GAP_0_1=1;
+ELSE IF AVG_GAP >1 AND AVG_GAP <=3 THEN AVG_GAP_2_3=1;
+ELSE IF AVG_GAP GT 3 AND AVG_GAP LE 6 THEN AVG_GAP_4_6 = 1;
+ELSE IF AVG_GAP GT 6 AND AVG_GAP LE 9 THEN AVG_GAP_7_9 = 1;
+ELSE IF AVG_GAP GT 9 AND AVG_GAP LE 12 THEN AVG_GAP_10_12 = 1;
+ELSE IF AVG_GAP GT 12 AND AVG_GAP LE 18 THEN AVG_GAP_11_18 = 1;
+ELSE IF AVG_GAP GT 18 AND AVG_GAP LE 36 THEN AVG_GAP_19_36 = 1;
+ELSE IF AVG_GAP GT 36 THEN AVG_GAP_36P = 1;
+RUN;
+
+PROC SQL;
+CREATE TABLE  any.MASTER_XS1 AS
+SELECT
+	DISTINCT
+		A.*,
+	    B. AVG_GAP_0_1,
+		B. AVG_GAP_2_3, 
+		B. AVG_GAP_4_6, 
+		B. AVG_GAP_7_9, 
+		B. AVG_GAP_10_12, 
+		B. AVG_GAP_11_18, 
+		B. AVG_GAP_19_36,
+		B. AVG_GAP_36P
+FROM
+	any.MASTER_XS1 A LEFT JOIN ANY.ID_GAP B ON A.individual_id=B.individual_id;
+QUIT;
+
+
+DATA any.MASTER_XS1;
+SET any.MASTER_XS1;
+array testmiss(*)AVG_GAP_0_1--AVG_GAP_36P;
+  do i = 1 to dim(testmiss);                                              
+    if testmiss(i)=. then testmiss(i)=0;
+  end;
+RUN; 
+
+
+
+/*adding margin_tier*/
+data any.respond_orders;
+set any.respond_orders;
+MARGIN=(DEMAND_DOLLARS -DEMAND_UNITS*ITEM_COST );
+run;
+
+
+proc sql;
+create table any.margin as
+select
+	distinct individual_id, sum(MARGIN) as margin_m12
+from
+	any.respond_orders
+where
+	order_line_status='D' and m12=1
+group by 1;
+quit;
+
+ 
+
+proc univariate data= any.margin plot noprint;
+var margin_m12 ;
+output out= any.margin_univ  n=n nmiss=nmiss min=min max=max mean=mean std=std 
+pctlpts=0 10  20 30 40 50 60 70 80  90  100 pctlpre=p_ ;
+run;
+
+data any.margin ;
+set any.margin ;
+if margin_m12 ne  . and margin_m12<0 then margin_tier=1;
+else if margin_m12>=0 and margin_m12< 50 then margin_tier=2;
+else if margin_m12>=50 and margin_m12< 100 then margin_tier=3;
+else if margin_m12>=100 and margin_m12< 200 then margin_tier=4;
+else if margin_m12>=200 and margin_m12< 300 then margin_tier=5;
+else if margin_m12>=300 and margin_m12< 500 then margin_tier=6;
+else if margin_m12>=500  then margin_tier=7;
+run;
+
+
+PROC SQL;
+CREATE TABLE  any.MASTER_XS1 AS
+SELECT
+	DISTINCT
+		A.*,
+	    B. margin_tier
+FROM
+	any.MASTER_XS1 A LEFT JOIN ANY.margin B ON A.individual_id=B.individual_id;
+QUIT;
+
+
+data any.MASTER_XS1 ;
+set any.MASTER_XS1 ;
+if margin_tier=.  then margin_tier=0;
+run;
+
+proc contents data = any.MASTER_XS1 out = any.pc_master; run;
+
+data any.master_xs1;
+set any.master_xs1;
+if	WomenApparel =. then WomenApparel=11;
+if	Others  =. then Others =11;
+if	Mens =. then Mens =11;
+if	Kids =. then Kids =11;
+if	JewelryAccess =. then JewelryAccess =11;
+if	BeautyFragrance =. then BeautyFragrance =11;
+if	ShoesHandbags=. then ShoesHandbags=11;
+run;
+		
+	
+/*data any.master_xs1;*/
+/*set any.master_xs1;*/
+/*if	tslp=0 then shop_0_1=1;*/
+/*run;*/
+
+LIBNAME SALE 'M:\Candice\Saks\Curated_Sales';
+
+PROC SORT DATA  = any.master_xs1; 
+BY RESPONDER emailable_flag sale_flag_ct ;
+RUN;
+
+data curated_sale_emails_02122019 ;
+set SALE.curated_sale_emails_02122019 ;
+run;
+
+PROC SQL;
+CREATE TABLE ANY.SALE_FILE AS
+SELECT DISTINCT INDIVIDUAL_ID 
+FROM curated_sale_emails_02122019 A INNER JOIN SDDB.CUSTOMER B ON A.EMAIL_ADDRESS=B.EMAIL_ADDRESS
+WHERE INDIVIDUAL_ID NOT IN (0,999999999,.);
+QUIT;
+/**/
+/*data any.master_xs1;*/
+/*set any.master_xs1;*/
+/*drop CURATED_SALE_FLAG;*/
+/*run;*/
+/*omni_flag*/
+/*PROC SQL;*/
+/*CREATE TABLE ANY.ENTERPRISE_STATUS AS*/
+/*SELECT*/
+/*	DISTINCT */
+/*		EMAIL_ADDRESS,*/
+/*		CHANNEL,*/
+/*		COUNT(DISTINCT CHANNEL) AS CHANNEL_CT*/
+/*FROM*/
+/*	ANY.RESPOND_ORDERS*/
+/*GROUP BY */
+/*	EMAIL_ADDRESS;*/
+/*QUIT;*/
+/**/
+/*PROC SQL;*/
+/*CREATE TABLE ANY.ENTERPRISE_STATUS AS*/
+/*SELECT*/
+/*	DISTINCT 	*/
+/*		EMAIL_ADDRESS,*/
+/*		CASE WHEN CHANNEL_CT =2 THEN 3*/
+/*			 WHEN CHANNEL_CT =1 AND CHANNEL='STR' THEN 1*/
+/*			 WHEN CHANNEL_CT =1 AND CHANNEL='OL' THEN 2 END AS ENTERPRISE_STATUS*/
+/*FROM*/
+/*	ANY.ENTERPRISE_STATUS;*/
+/*QUIT;*/
+/*			 */
+
+/**/
+/*PROC SQL;*/
+/*CREATE TABLE any.master_xs1  AS*/
+/*SELECT */
+/*	DISTINCT A.*,B.ENTERPRISE_STATUS*/
+/*FROM*/
+/*	any.master_xs1 a LEFT JOIN ANY.ENTERPRISE_STATUS B ON A.EMAIL_ADDRESS=B.EMAIL_aDDRESS;*/
+/*QUIT;*/
+
+
+/*PROC SQL;*/
+/*CREATE TABLE any.master_xs1  AS*/
+/*SELECT DISTINCT A.*,*/
+/*       CASE WHEN INDIVIDUAL_ID  IN (SELECT INDIVIDUAL_ID FROM ANY.SALE_FILE) THEN 1 ELSE 0 END AS CURATED_SALE_FLAG*/
+/*FROM*/
+/*	any.master_xs1 a ;*/
+/*QUIT;*/
+
+/*proc sql; select distinct CURATED_SALE_FLAG, count(distinct individual_id) as inds from any.master_xs1 group by 1;quit;*/
+/**/
+
+
+PROC SQL;
+CREATE TABLE ANY.Saks_fl_orders_cat_id AS
+SELECT
+	DISTINCT A.*, B. MAX_CUT_OFF
+FROM
+	any.Saks_fl_orders_cat_id A  INNER JOIN ANY.Master B ON A.INDIVIDUAL_ID=B.INDIVIDUAL_ID;
+QUIT;
+
+DATA ANY.Saks_fl_orders_cat_id;
+SET ANY.Saks_fl_orders_cat_id;
+WHERE ORDERDATE <=MAX_CUT_OFF;
+RUN;
+
+PROC SQL;
+CREATE TABLE ANY.SAKS_FL_ORDERS_CAT_ID AS
+SELECT DISTINCT A.*, B.YEAR, B. MONTH_NUMBER
+FROM ANY.SAKS_FL_ORDERS_CAT_ID A INNER JOIN FANLI.WEEKLY_CALENDAR B ON A.orderdate= B. DATE;
+QUIT;
+
+
+PROC SQL;
+CREATE TABLE ANY.FL_DATA AS
+SELECT
+	DISTINCT 
+		INDIVIDUAL_ID,
+		2 AS ENTERPRISE_STATUS,
+		abs(intck('month',max((ORDERDATE)),(max_cut_off))) as tslp_str,
+		COUNT(DISTINCT(CASE WHEN MONTH_NUMBER=&month. THEN YEAR END)) AS FL_&MONTH._TIMES
+FROM
+	ANY.Saks_fl_orders_cat_id
+GROUP BY 
+	1;
+QUIT;
+
+PROC SQL; SELECT DISTINCT tslp_str FROM ANY.FL_DATA ;QUIT;
+
+/*data any.master_xs1 ;*/
+/*set any.master_xs1 ;*/
+/*DROP  ENTERPRISE_STATUS tslp_str  FL_&MONTH._TIMES tslp_str_rev;*/
+/*RUN;*/
+
+
+PROC SQL;
+CREATE TABLE any.master_xs1  AS
+SELECT 
+	DISTINCT A.*,B.ENTERPRISE_STATUS, b.tslp_str, b. FL_&MONTH._TIMES
+FROM
+	any.master_xs1 a LEFT JOIN ANY.FL_DATA B ON A.INDIVIDUAL_ID=B.INDIVIDUAL_ID;
+QUIT;
+
+
+data any.master_xs1 ;
+set any.master_xs1 ;
+IF tslp_str Ge 0 AND tslp_str LE 1 THEN FL_SHOP_0_1 = 1; 
+ELSE IF tslp_str GT 1 AND tslp_str LE 3 THEN FL_SHOP_2_3 = 1;
+ELSE IF tslp_str GT 3 AND tslp_str LE 6 THEN FL_SHOP_4_6 = 1;
+ELSE IF tslp_str GT 6 AND tslp_str LE 9 THEN FL_SHOP_7_9 = 1;
+ELSE IF tslp_str GT 9 AND tslp_str LE 12 THEN FL_SHOP_10_12 = 1;
+ELSE IF tslp_str GT 12 AND tslp_str LE 18 THEN FL_SHOP_11_18 = 1;
+ELSE IF tslp_str GT 18 AND tslp_str LE 36 THEN FL_SHOP_19_36 = 1;
+ELSE IF tslp_str GT 36 THEN FL_SHOP_36P = 1;
+if ENTERPRISE_STATUS =. then ENTERPRISE_STATUS=1;
+if FL_&MONTH._TIMES =. then FL_&MONTH._TIMES=0;
+run;
+
+
+DATA any.MASTER_XS1;
+SET any.MASTER_XS1;
+array testmiss(*)FL_SHOP_0_1--FL_SHOP_36P;
+  do i = 1 to dim(testmiss);                                              
+    if testmiss(i)=. then testmiss(i)=0;
+  end;
+RUN; 
+
+DATA ANY.MASTER_XS1;
+SET ANY.MASTER_XS1;
+DROP QTR_1 
+QTR_1 
+QTR_2
+QTR_3
+QTR_4
+QTR_5
+QTR_6
+QTR_7
+QTR_8
+QTR_9
+QTR_10
+QTR_11
+QTR_12
+QTR_13
+;
+RUN;
+
+PROC SQL;
+CREATE TABLE any.MASTER_XS1 AS
+SELECT DISTINCT A.*, B.*
+FROM any.MASTER_XS1 A LEFT JOIN ANY.Id_spend_qtr_last_36m_t B ON A.INDIVIDUAL_ID =B.INDIVIDUAL_ID ;
+QUIT;
+
+
+DATA any.MASTER_XS1;
+SET any.MASTER_XS1;
+array testmiss(*)QTR_1--QTR_13;
+  do i = 1 to dim(testmiss);                                              
+    if testmiss(i)=. then testmiss(i)=0;
+  end;
+RUN; 
+
+PROC SORT DATA  = any.master_xs1; 
+BY RESPONDER ENTERPRISE_STATUS emailable_flag sale_flag_ct ;
+RUN;
+
+
+data any.master_xs1 ;
+set any.master_xs1 ;
+spending_lord_m12=gs_lord/gs_m12;
+run;
+
+
+data any.master_xs1 ;
+set any.master_xs1 ;
+if SPENDING_LORD_M12=. then SPENDING_LORD_M12=0;
+run; 
+
+
+data any.master_xs1 ;
+set any.master_xs1 ;
+DROP L_SOW;
+RUN;
+
+
+data any.master_xs1 ;
+set any.master_xs1 ;
+if spending_lord_m12 = . then spending_lord_m12 = 0;
+L_SOW = LOG(spending_lord_m12);
+RUN;
+
+DATA ANY.master_xs1;
+SET ANY.master_xs1;
+if L_SOW=. then L_SOW=-10;
+run;
+
+
+DATA ANY.master_xs1;
+SET ANY.master_xs1;
+IF VIP_STATUS='T' THEN VIP_STATUS_REV=3;
+IF VIP_STATUS='M' THEN VIP_STATUS_REV=2;
+IF VIP_STATUS='S' THEN VIP_STATUS_REV=1;
+IF VIP_STATUS='Z' THEN VIP_STATUS_REV=0;
+RUN;
+
+DATA ANY.master_xs1;
+SET ANY.master_xs1;
+if tslp_str=. then tslp_str=999;
+run;
+
+proc sql;
+create table check as select distinct spending_lord_m12, L_SOW from ANY.master_xs1;
+quit;
+
+DATA ANY.master_xs1;
+SET ANY.master_xs1;
+if L_SOW=. then L_SOW=-10;
+run;
+
+
+DATA any.master_xs1;
+SET any.master_xs1;
+/*array testmiss(*)QTR_1--QTR_13;*/
+array testmiss(*)QTR_6--QTR_8;
+  do i = 1 to dim(testmiss);                                              
+    if testmiss(i)=. then testmiss(i)=0;
+	if testmiss(i)>0 then testmiss(i)=1;
+  end;                                                                    
+run; 
+
+PROC SORT DATA  = any.master_xs1; BY RESPONDER ENTERPRISE_STATUS emailable_flag sale_flag_ct;RUN;
+
+proc surveyselect data = any.master_xs1 out = any.master_xs1_test method = srs samprate = .5 seed = 9876;
+strata RESPONDER ENTERPRISE_STATUS emailable_flag sale_flag_ct ;
+run;
+ 
+/**/
+/**/
+/*PROC EXPORT DATA= any.master_xs1_test*/
+/*OUTFILE = 'I:\2016 Marketing\Fanli\Saks\PROMOTION\MYSTERY MONEY\MODELING_TEST_FILE.CSV'*/
+/*DBMS = CSV REPLACE;*/
+/*RUN;*/
+/*		*/
+PROC SQL;SELECT DISTINCT tslp_str FROM any.master_xs1_test;QUIT;
+
+DATA ANY.MASTER_XS1_TEST_LAPSED;
+SET ANY.master_xs1_test;
+WHERE L_SOW =. ;
+
+RUN;
+proc sql; select distinct tslp from any.MASTER_XS1_TEST_LAPSED ;quit;
+
+DATA ANY.MASTER_XS1_TEST_RETAINED;
+SET ANY.master_xs1_test;
+WHERE L_SOW NE -10 ;
+RUN;
+
+
+proc sql; select distinct tslp from any.MASTER_XS1_TEST_RETAINED ;quit;
+
+proc sql; 
+ods html open;
+ods graphics off;
+proc logistic data=any.MASTER_XS1_TEST_RETAINED covout outMODEL= any.OUTPUT_test_W_RIDGING descending;
+class       
+    SAKS_FIRST_INDICATOR
+	ENTERPRISE_STATUS
+    P1
+    emailable_flag
+    sale_flag_ct
+/*	CURATED_SALE_FLAG*/
+/*    VIP_STATUS_REV*/
+      SINGLE
+      SHOP_0_1
+      SHOP_2_3
+      SHOP_4_6
+      SHOP_7_9
+      SHOP_10_12
+      SHOP_11_18
+      SHOP_19_36
+      SHOP_36P
+	  pre_&month._times
+	  pre_&month._times_last
+/*		FL_SHOP_0_1  */
+/*		FL_SHOP_2_3  */
+/*		FL_SHOP_4_6  */
+/*		FL_SHOP_7_9  */
+/*		FL_SHOP_10_12  */
+/*		FL_SHOP_11_18 */
+/*		FL_SHOP_19_36 */
+/*		FL_SHOP_36P */
+		  AVG_GAP_0_1
+		 AVG_GAP_2_3 
+		 AVG_GAP_4_6 
+		 AVG_GAP_7_9 
+		 AVG_GAP_10_12 
+		 AVG_GAP_11_18 
+		 AVG_GAP_19_36
+		 AVG_GAP_36P
+/*		 QTR_1*/
+/*		 QTR_2*/
+/*		 QTR_3*/
+/*		 QTR_4*/
+/*		 QTR_5*/
+/*		 QTR_6*/
+/*		 QTR_7*/
+/*		 QTR_8*/
+/*		 QTR_9*/
+/*		 QTR_10*/
+/*		 QTR_11*/
+/*		 QTR_12*/
+/*		 QTR_13*/
+		WomenApparel 
+		Others 
+		Mens 
+		Kids 
+		JewelryAccess 
+		BeautyFragrance 
+		ShoesHandbags
+
+/ param=ref;  /*for categorical variables, to check design variables*/
+
+model RESPONDER = 
+                              tsfp
+							  enterprise_status
+							FL_&MONTH._TIMES
+                            GS_lord
+                            GS_m12
+                            orders
+/*							CURATED_SALE_FLAG*/
+                            promo_code_penetration_m12
+                            SAKS_FIRST_INDICATOR
+/*                            P1*/
+                            emailable_flag
+                            sale_flag_ct
+                            VIP_STATUS_REV
+                            spending_lord_m12
+                              L_SOW
+                              SINGLE
+                              SHOP_0_1
+                              SHOP_2_3
+                              SHOP_4_6
+                              SHOP_7_9
+                              SHOP_10_12
+                              SHOP_11_18
+                              SHOP_19_36
+                              SHOP_36P
+  							  pre_&month._times
+							  pre_&month._times_last
+							WomenApparel 
+							Others 
+							Mens 
+							Kids 
+							JewelryAccess 
+							BeautyFragrance 
+							ShoesHandbags
+							FL_SHOP_0_1  
+							FL_SHOP_2_3  
+							FL_SHOP_4_6  
+							FL_SHOP_7_9  
+							FL_SHOP_10_12  
+							FL_SHOP_11_18 
+							FL_SHOP_19_36 
+							FL_SHOP_36P 
+ 							AVG_GAP_0_1
+						    AVG_GAP_2_3 
+						    AVG_GAP_4_6 
+						    AVG_GAP_7_9 
+					        AVG_GAP_10_12 
+						    AVG_GAP_11_18 
+						    AVG_GAP_19_36
+						    AVG_GAP_36P
+							margin_tier
+/*							 QTR_1*/
+/*		 QTR_2*/
+/*		 QTR_3*/
+/*		 QTR_4*/
+/*		 QTR_5*/
+/*		 QTR_6*/
+/*		 QTR_7*/
+/*		 QTR_8*/
+/*		 QTR_9*/
+/*		 QTR_10*/
+/*		 QTR_11*/
+/*		 QTR_12*/
+/*		 QTR_13*/
+
+
+/sls = 0.05 sle = 0.05 details lackfit 
+ctable pprob = (.05 to .6 by .05) 
+outroc=any.roc1
+selection = STEPWISE 
+/*RIDGING= absolute*/
+;
+ods output ParameterEstimates = any.pest_test1;
+/*ods graphics off;*/
+output out = any.model_test p = predval xbeta = logit;
+;
+run;
+/*Deliberately keeping SALE_P,SALE_PCT, SL_0, SL_1 OUT OF THE MODEL TO SATISFY Convergence Criterion*/
+quit;
+ods html close;
+ods html open;
+
+
+
+
+/*Setting the cut-off probability - Test dataset*/
+data any.model_test;
+set  any.model_test;
+if predval >= 0.30 then Pred_S1 = 1;else Pred_S1 = 0;
+run;
+
+/*Classification Matrix - Test dataset*/
+proc freq data = any.model_test;
+tables RESPONDER * Pred_S1 /out = any.TEST_CTAB;
+run;
+
+proc univariate data=any.model_test plot noprint;
+var predval ;
+output out= any.prob_1_distr  n=n nmiss=nmiss min=min max=max mean=mean std=std 
+pctlpts=0 10 15 20 30 40 50 60 70 80 85 90 95 99 100 pctlpre=p_ ;
+run;
+
+
+/*Scoring the validation dataset*/
+/*proc logistic inmodel = SALE.INMODEL_APR2013 descending;*/
+proc logistic inmodel = any.OUTPUT_test_W_RIDGING descending;
+	score data =  any.master_xs1_ctrl  out= any.master_xs1_ctrl_v;
+run;
+
+
+
+/*Setting the cut-off probability - Validation dataset*/
+data any.master_xs1_ctrl_v;
+set any.master_xs1_ctrl_v;
+if P_1 >= 0.25 then Pred_S1 = 1;else Pred_S1 = 0;
+run;
+
+/*Classification Matrix - Validation dataset*/
+proc freq data = any.master_xs1_ctrl_v;
+tables RESPONDER * Pred_S1 /out = any.CTRL_CTAB;
+run;
+
+proc univariate data=any.master_xs1_ctrl_v plot noprint;
+var P_1 ;
+output out= any.prob_1_distr  n=n nmiss=nmiss min=min max=max mean=mean std=std 
+pctlpts=0 10 15 20 30 40 50 60 70 80 85 90 95 99 100 pctlpre=p_ ;
+run;
+
+
+
+/*OTHER */
+
+
+ods graphics off;
+proc logistic data=any.ID_SPEND_QTR_LAST_36M_T covout outMODEL= OUTPUT_test_W_RIDGING descending;
+class       
+QTR_5--QTR_7
+
+ / param=ref;  /*for categorical variables, to check design variables*/
+
+model RESPONDER = 
+QTR_5--QTR_7
+
+
+
+/sls = 0.05 sle = 0.05 details lackfit 
+ctable pprob = (.05 to .6 by .05) 
+outroc=any.roc1
+selection = STEPWISE 
+/*RIDGING= absolute*/
+;
+ods output ParameterEstimates = any.pest_test1;
+/*ods graphics off;*/
+output out = any.model_test p = predval xbeta = logit;
+;
+run;
