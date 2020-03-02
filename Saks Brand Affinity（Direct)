@@ -1,0 +1,1007 @@
+LIBNAME SDDB oracle user=fanlizhou pass= path=neworacle schema='SDMRK';
+LIBNAME cxt oracle user=fanlizhou pass= path=neworacle schema='SDMRK';
+libname bna 'M:\Fanli\New_Arrivals_Saks\NA_by_Brand\LIBRARY';
+libname email 'M:\Fanli\cxt';
+libname FL 'M:\Fanli\STORE DATA';
+libname FANLI 'M:\Fanli';
+libname ORDERS 'f:\ORDERS';
+LIBNAME XDB 'M:\XDB';
+libname trial 'M:\Fanli\CXT\Trial';
+LIBNAME SAKS 'M:\Fanli\EMAIL SEGMENTS\Transaction Segmentation';
+
+
+/*MAKE A LOCAL COPY OF PRODUCT AND STANDARDIZE BRAND_NAME */
+DATA PRODUCT;
+SET sddb.product ( dbsastype= ( PRD_ID='char(16)') );
+WHERE GROUP_ID IS NOT NULL AND BRAND_NAME IS NOT NULL;
+KEEP  PRODUCT_CODE PRD_ID BRAND_NAME GROUP_ID SKU SKU_SALE_PRICE group_id;
+RUN;
+
+DATA PRODUCT;
+SET PRODUCT;
+BRAND_NAME_ORIG=BRAND_NAME;
+RUN;
+
+
+/*MODIFY BRAND_NAME TO BE CONSISTENT*/
+DATA xdb.French_character_decoding;
+SET xdb.French_character_decoding;
+DROP NUMMETRIC METRICS;
+RUN;
+
+DATA xdb.French_character_decoding;
+SET xdb.French_character_decoding END=EOF;              /* READ SAS DATASET */
+BY numerical_code;                                          /* SORT SEQ */
+IF FIRST.numerical_code THEN DO;                    
+      NUMMETRIC+1;                                     
+      METRICS = 0;
+END;
+METRICS + 1;
+IF LAST.numerical_code THEN DO;                       /* EOF VENDOR, MAKE MAC VARS*/
+      CALL SYMPUT('Mnumerical_code'||LEFT(PUT(NUMMETRIC,3.)),COMPRESS(numerical_code));
+      CALL SYMPUT('MDisplay'||LEFT(PUT(NUMMETRIC,3.)),compress(Display));
+	  CALL SYMPUT('MEnglish'||LEFT(PUT(NUMMETRIC,3.)),compress(English_code));
+END;
+IF EOF THEN
+      CALL SYMPUT('MTOTCT',COMPRESS(NUMMETRIC));                  /* MAC VAR NO DIF CTYS */
+RUN;
+
+%PUT *** MTOTCT=&MTOTCT;      
+
+%MACRO LOOPTEST;                                
+%DO I=1 %TO &MTOTCT;                                  /* LOOP THRU ALL VENDORS */
+                  %PUT *** FILE = &&Mnumerical_code&I ILOOP &I OF &MTOTCT ; 
+				  %PUT *** FILE = &&MDisplay&I ILOOP &I OF &MTOTCT ; 
+				  %PUT *** FILE = &&MEnglish&I ILOOP &I OF &MTOTCT ; 
+
+%END; 
+%MEND LOOPTEST;                                       /* END OF MACRO */
+%LOOPTEST   
+%MACRO LOOPTEST;                                
+%DO I=1 %TO &MTOTCT; 
+
+DATA   product;
+SET  product;
+BRAND_NAME=tranwrd(BRAND_NAME, "&&Mnumerical_code&I..", "&&MEnglish&I..");
+RUN;
+
+DATA   product;
+SET  product;
+BRAND_NAME=tranwrd(BRAND_NAME, "&&MDisplay&I..", "&&MEnglish&I..");
+RUN;
+%PUT &I.;
+
+%END; 
+%MEND LOOPTEST;                                       /* END OF MACRO */
+%LOOPTEST   
+
+DATA   product;
+SET  product;
+BRAND_NAME = UPCASE(COMPRESS(TRIM(BRAND_NAME),", & _ . ' -  + * ^ ( ) @ # ! ~ ` '  : ; < > / ? { [ } ] | \ = $ ¿ %"));
+RUN;
+
+PROC SQL;
+CREATE TABLE product AS
+SELECT
+	DISTINCT 
+		A. *,
+		B. CATEGORY_NUM_2 AS CATEGORY 
+FROM
+	product A LEFT JOIN FANLI.CATEGORY_MAP  B ON A.GROUP_ID=B.GROUP_ID;
+QUIT;
+
+
+LIBNAME ast ASTER DSN=Aster SCHEMA=dw;
+LIBNAME mkt ASTER DSN=Aster SCHEMA=marketing;
+
+
+
+
+DATA _null_; 
+BROWSE_DT=PUT(TODAY()-365, YYMMDD10.);   
+CALL SYMPUTX ('BROWSE_DT',BROWSE_DT); 
+RUN;
+
+%put BROWSE_DT=&BROWSE_DT.;
+
+proc sql; 
+connect to ASTER as ast (DSN=Aster);
+create table designer_refinement as
+SELECT *FROM connection to ast 
+(
+select 
+	email,
+	category_num, 
+	split_fruits as brand_desc,
+	count(distinct event_uuid) as events,
+	max(date_filter) as last_refinement_dt
+from
+(SELECT 
+visitor_device_uuid,
+event_uuid,
+PAGE_VIEW_UUID,
+date_filter,
+regexp_split_to_table(value2, '[[=^=]]') AS split_fruits
+FROM dw.fact_omni_saks_events
+where DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.")  
+and value1='designer' 
+group by 1,2,3,4,5) EVENT
+INNER JOIN 
+(
+SELECT 
+page_view_uuid,
+case 
+	when  page_name like ('%womensapparel%') then 239  
+	when  page_name like ('%shoes%') then 81
+	when  page_name like ('%handbags%') then 82
+	when  page_name like ('%beauty%') then 1 
+	when  page_name like ('%kids%') then 5 
+	when  page_name like ('%themensstore%') then 6 
+	when  page_name like ('%jewelry%') then 10
+	when  page_name like ('%home%') then 4
+end as category_num
+FROM dw.fact_omni_saks_page_views 
+where DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.") and page_type in ('product array') )PG
+on pg.page_view_uuid= EVENT.page_view_uuid
+inner join 
+(select distinct lower(brand_desc) as brand_desc from dw.dim_oms_products where brand_Desc is not null 
+and organization_code='SAKS' 
+union
+select distinct lower(brand_name) as brand_desc from replicator.hbc_dw_mrep_bi_product where brand_name is not null 
+) brd on EVENT.split_fruits= brd.brand_desc 
+inner join dw.dim_visitor_devices device on event.visitor_device_uuid = device.visitor_device_uuid
+
+WHERE device.email not in ( '""','0') and TRIM(EMAIL) <> ""
+group by 1,2,3
+);Disconnect from ast;
+Quit;
+
+
+/*app*/
+
+proc sql; 
+connect to ASTER as ast (DSN=Aster);
+create table designer_refinement_app as
+SELECT *FROM connection to ast 
+(
+select 
+	email,
+	category_num, 
+	split_fruits as brand_desc,
+	count(distinct event_uuid) as events,
+	max(date_filter) as last_refinement_dt
+from
+(SELECT 
+visitor_device_uuid,
+event_uuid,
+PAGE_VIEW_UUID,
+date_filter,
+regexp_split_to_table(value2, '[[=^=]]') AS split_fruits
+FROM dw.fact_omni_saks_events
+where DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.")  
+and value1='designer' 
+group by 1,2,3,4,5) EVENT
+INNER JOIN 
+(
+SELECT 
+page_view_uuid,
+case 
+	when  page_name like ('%womensapparel%') then 239  
+	when  page_name like ('%shoes%') then 81
+	when  page_name like ('%handbags%') then 82
+	when  page_name like ('%beauty%') then 1 
+	when  page_name like ('%kids%') then 5 
+	when  page_name like ('%themensstore%') then 6 
+	when  page_name like ('%jewelry%') then 10
+	when  page_name like ('%home%') then 4
+end as category_num
+FROM dw.fact_omni_saks_page_views 
+where DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.") and page_type in ('product array') )PG
+on pg.page_view_uuid= EVENT.page_view_uuid
+inner join 
+(select distinct lower(brand_desc) as brand_desc from dw.dim_oms_products where brand_Desc is not null 
+and organization_code='SAKS' 
+union
+select distinct lower(brand_name) as brand_desc from replicator.hbc_dw_mrep_bi_product where brand_name is not null 
+) brd on EVENT.split_fruits= brd.brand_desc 
+inner join dw.dim_visitor_devices device on event.visitor_device_uuid = device.visitor_device_uuid
+
+WHERE device.email not in ( '""','0') and TRIM(EMAIL) <> ""
+group by 1,2,3
+);Disconnect from ast;
+Quit;
+
+
+
+
+proc sql;
+create table cat_brand_239 as 
+select 
+distinct 
+	lowcase(brand_name) as brand_desc , 
+	category_num_2, 
+	count(distinct product_code) as prds_ttl ,
+	count(distinct (case when warehouse_sellable_units >0 or warehouse_backorder_units >0 or  store_inventory>0 then product_code end)) as prds 
+from sddb.product a inner join fanli.category_map b on a.group_id= b.group_id
+where category_num_2 in (2,3,9) and 
+brand_name is not null
+group by 1,2
+order by 1,4 desc,3 desc
+;quit;
+
+data cat_brand_239 ;set  cat_brand_239; where brand_desc is not null; by brand_desc; if first.brand_desc ;run;
+
+proc sql;select count(*) as obs, count(distinct brand_Desc) as brands from cat_brand_239;quit;
+
+/*data designer_refinement_10000;set designer_refinement; if _n_<=10000;run;*/
+
+proc sql;
+update designer_refinement as u
+   set category_num=(select category_num_2 from cat_brand_239 as n
+			where u.brand_desc=n.brand_desc)
+		where u.brand_desc in (select brand_desc from cat_brand_239) and u.category_num = 239;
+quit;
+
+proc sql;
+create table cat_brand_ttl as 
+select 
+distinct 
+	lowcase(brand_name) as brand_desc , 
+	category_num_2, 
+	count(distinct product_code) as prds_ttl ,
+	count(distinct (case when warehouse_sellable_units >0 or warehouse_backorder_units >0 or  store_inventory>0 then product_code end)) as prds 
+from sddb.product a inner join fanli.category_map b on a.group_id= b.group_id
+where brand_name is not null
+group by 1,2
+order by 1,4 desc,3 desc
+;quit;
+
+data cat_brand_ttl ;set  cat_brand_ttl; where brand_desc is not null; by brand_desc; if first.brand_desc ;run;
+
+proc sql;select count(*) as obs, count(distinct brand_Desc) as brands from cat_brand_ttl;quit;
+
+
+proc sql;
+update designer_refinement as u
+   set category_num=(select category_num_2 from cat_brand_ttl as n
+			where u.brand_desc=n.brand_desc)
+		where u.brand_desc in (select brand_desc from cat_brand_ttl) and u.category_num = .;
+quit;
+
+
+
+proc sql; 
+connect to ASTER as ast (DSN=Aster);
+create table brand_array_parse as
+SELECT *FROM connection to ast (
+select 
+device.email,
+category_num,
+split_fruits as brand_desc,
+count(distinct page_view_uuid) as brand_page_views,
+max(date_filter) as last_brand_view_dt 
+from 
+(SELECT 
+visitor_device_uuid,
+DATE_FILTER,
+page_view_uuid,
+regexp_split_to_table(page_name, ':') AS split_fruits,
+case 
+	when  page_name like ('%womensapparel%') then 239  
+	when  page_name like ('%shoes%') then 81
+	when  page_name like ('%handbags%') then 82
+	when  page_name like ('%beauty%') then 1 
+	when  page_name like ('%kids%') then 5 
+	when  page_name like ('%themensstore%') then 6 
+	when  page_name like ('%jewelry%') then 10
+	when  page_name like ('%home%') then 4
+end as category_num
+FROM dw.fact_omni_saks_page_views 
+where DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.") and page_type in ('brand array') 
+group by visitor_device_uuid,
+DATE_FILTER,
+page_view_uuid,
+page_name) pg
+inner join 
+(select distinct lower(brand_desc) as brand_desc from dw.dim_oms_products where brand_Desc is not null 
+and organization_code='SAKS' 
+union
+select distinct lower(brand_name) as brand_desc from replicator.hbc_dw_mrep_bi_product where brand_name is not null 
+) brd on pg.split_fruits= brd.brand_desc 
+/*inner join dw.fact_omni_saks_Sessions sess on pg.session_uuid= sess.session_uuid */
+inner join dw.dim_visitor_devices device on pg.visitor_device_uuid = device.visitor_device_uuid
+where 
+/*sess.DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.") */
+/*and sess.order_flag =0*/
+/*and */
+device.email not in ( '""','0') and TRIM(EMAIL) <> ""
+and split_fruits not in ('brand')
+group by 1,2,3
+);Disconnect from ast;
+Quit;
+
+
+proc sql;
+update brand_array_parse as u
+   set category_num=(select category_num_2 from cat_brand_239 as n
+			where u.brand_desc=n.brand_desc)
+		where u.brand_desc in (select brand_desc from cat_brand_239) and u.category_num = 239;
+quit;
+
+
+proc sql;
+update brand_array_parse as u
+   set category_num=(select category_num_2 from cat_brand_ttl as n
+			where u.brand_desc=n.brand_desc)
+		where u.brand_desc in (select brand_desc from cat_brand_ttl) and u.category_num = .;
+quit;
+
+
+
+proc sql; 
+connect to ASTER as ast (DSN=Aster);
+create table product_details as
+SELECT *FROM connection to ast (
+select 
+device.email,
+category_num ,
+brd.brand_desc,
+count(distinct page_view_uuid) as pdp_page_views,
+max(date_filter) as last_pdp_view_Dt 
+from 
+(SELECT 
+visitor_device_uuid,
+DATE_FILTER,
+page_view_uuid,
+product_code
+FROM dw.fact_omni_saks_page_views 
+where DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.") and page_type in ('product detail','quick look') 
+group by 
+	visitor_device_uuid,
+	DATE_FILTER,
+	page_view_uuid,
+	product_code
+) pg
+inner join 
+(
+select 
+	product_code, 
+	(case 
+	when  group_id in('28','29') then 1 
+	when  group_id in('25') then 2 
+	when  group_id in('09','10','16','20','22','23','24') then 3 
+	when  group_id in('27','38','65') then 4 
+	when  group_id in('35') then 5 
+	when  group_id in('05','30','31','33','34','62','63','66') then 6 
+	when  group_id in('08') then 7 
+	when  group_id in('36') then 81 
+	when  group_id in('39') then 82 
+	when  group_id in('15') then 9 
+	when  group_id in('13','18','19','55') then 10 
+	when  group_id in('11','14','26','37','60') then 10 
+	end ) as category_num , 
+	lower(brand_name) as brand_desc 
+from replicator.hbc_dw_mrep_bi_product 
+where brand_name is not null 
+group by 1,2,3
+) brd on pg.product_code= brd.product_code 
+inner join dw.dim_visitor_devices device on pg.visitor_device_uuid = device.visitor_device_uuid
+where 
+device.email not in ( '""','0') and TRIM(EMAIL) <> ""
+group by device.email,
+category_num ,
+brd.brand_desc
+);Disconnect from ast;
+Quit;
+
+proc sort data=brand_array_parse; by email category_num brand_desc;run;
+proc sort data=Designer_refinement; by email category_num brand_desc;run;
+proc sort data=PRODUCT_DETAILS; by email category_num brand_desc;run;
+data email.browse_summary ;
+merge 
+	brand_array_parse (in=a)
+	Designer_refinement (in=b)
+	PRODUCT_DETAILS (in=c);
+by email category_num brand_desc;
+if a or b or c;
+email_address= upcase(email) ;
+drop email;
+run;
+
+PROC SQL;
+CREATE TABLE BRAND AS
+SELECT DISTINCT BRAND_NAME, BRAND_NAME_ORIG, LOWCASE(BRAND_NAME_ORIG) AS BRAND_NAME_2
+FROM product
+WHERE BRAND_NAME_ORIG IS NOT NULL;
+QUIT;
+PROC SQL;
+SELECT count(DISTINCT BRAND_NAME) as brs, 
+ count(DISTINCT BRAND_NAME_ORIG) as brs_orig,count(*) as obs
+FROM BRAND
+;QUIT;
+
+
+PROC SQL;
+CREATE TABLE email.browse_summary AS
+SELECT DISTINCT A.*, B.BRAND_NAME 
+FROM EMAIL.BROWSE_SUMMARY A LEFT JOIN BRAND B ON A.BRAND_DESC= B.BRAND_NAME_2
+where category_num is not null;
+QUIT;
+
+data email.browse_summary(rename= (category_num=category)); set email.browse_summary;
+/*BRAND_NAME=upcase(brand_desc);*/
+where category_num is not null;
+drop brand_desc;
+run;
+
+****************************PART 1 ONLINE & IN-STORE SHOPPERS **************************************;
+
+
+/*ONLINE BUYERS FROM 2013 WITH NET SALES*/
+DATA  EMAIL.IND_PRODUCT_BRAND;
+SET  SDDB.ORDERS( dbsastype= ( customer_id='char(16)') ) ;
+WHERE
+	INDIVIDUAL_ID NOT IN (.,0,999999999)
+	AND DIVISION_ID NOT IN ('4','5','9');
+KEEP 
+	INDIVIDUAL_ID
+	CUSTOMER_ID
+	ORDERDATE
+	DIVISION_ID
+	GROUP_ID
+	SKU
+	DEMAND_UNITS
+	DEMAND_DOLLARS
+;
+run;
+
+DATA  EMAIL.IND_PRODUCT_BRAND_HIST;
+SET  ORDERS.v_orders_hist_NEW;
+WHERE
+	ORDER_LINE_STATUS='D' AND INDIVIDUAL_ID NOT IN (.,0,999999999)
+	AND DIVISION_ID NOT IN ('4','5','9');
+KEEP 
+	INDIVIDUAL_ID
+	CUSTOMER_ID
+	ORDERDATE
+	DIVISION_ID
+	GROUP_ID
+	SKU
+	DEMAND_UNITS
+	DEMAND_DOLLARS
+;
+run;
+
+PROC APPEND BASE=EMAIL.IND_PRODUCT_BRAND DATA=EMAIL.IND_PRODUCT_BRAND_HIST FORCE ;RUN;
+
+
+
+proc sql;
+CONNECT TO oracle as db ( path=neworacle user=fanlizhou pass=);
+CREATE TABLE CUSTOMER AS
+select * from connection to db
+
+(select
+	email_address, INDIVIDUAL_ID
+from sdmrk.CUSTOMER
+WHERE INDIVIDUAL_ID IS NOT NULL AND INDIVIDUAL_ID  <> 0 AND INDIVIDUAL_ID  <> 999999999 and individual_id not in (108726543, 107262786, 108378697)
+		   
+)
+;
+Disconnect from db;
+Quit;
+
+proc sql;
+create table CUSTOMER as
+select * from CUSTOMER 
+group by individual_id
+having count(distinct email_Address)  <=10;
+quit;
+
+
+PROC SQL;CREATE TABLE PRODUCT_sim AS
+SELECT SKU, BRAND_NAME, CATEGORY FROM PRODUCT ORDER BY SKU ;QUIT;
+PROC SORT DATA=EMAIL.Ind_Product_Brand  ; BY SKU;RUN;
+
+DATA EMAIL.Ind_Product_Brand  ;
+MERGE EMAIL.Ind_Product_Brand  (IN=A)
+	  PRODUCT_sim(IN=B);
+BY SKU;
+IF A AND B ;
+RUN;
+
+
+PROC SQL;
+CREATE TABLE EMAIL.IND_PRODUCt_BRAND AS
+SELECT 
+	DISTINCT 
+		INDIVIDUAL_ID, 	
+		category, 
+		brand_name,
+		sum(demand_units) as items,
+		max(datepart(orderdate)) as last_order_dt format date9.
+from
+	EMAIL.Ind_Product_Brand
+group by 
+		INDIVIDUAL_ID,
+		category, 
+		brand_name;
+quit;
+
+
+proc sql;
+create table EMAIL.Ind_Product_Brand  as 
+select
+	distinct 
+		a.*, d.email_address
+from
+	EMAIL.Ind_Product_Brand  a 
+	inner join customer d on a.INDIVIDUAL_ID=d.INDIVIDUAL_ID
+	;
+quit;
+
+proc sql;
+create table EMAIL.id_brand as
+select
+	distinct
+		email_address,
+		category, 
+		brand_name,
+		sum(items) as items,
+		max(last_order_dt) as last_order_dt format date9.
+from
+	EMAIL.Ind_Product_Brand
+group by 
+		email_address,
+		category, 
+		brand_name;
+quit;
+
+
+libname str 'M:\Fanli\store data';
+
+PROC SQL;
+CREATE TABLE EMAIL.STORE_BUYER AS
+SELECT
+	DISTINCT
+		upcase(A. EMAIL_ADDRESS) as EMAIL_ADDRESS,
+		A.GRP_CD AS GROUP_ID,
+		A.BRAND_NM AS BRAND_NAME ,
+		sum(A.net_ITEMS) as items,
+		MAX(A.LAST_TRAN_DT) AS LAST_ORDER_DT FORMAT DATE9.,
+		B.CATEGORY_NUM_2 AS CATEGORY 
+FROM
+	str.Saks_fl_orders_net A INNER JOIN FANLI.CATEGORY_MAP B ON A.GRP_CD=B.FL_GROUP_ID 
+WHERE
+	EMAIL_ADDRESS NE '' 
+	AND BRAND_NM NE '' 
+	AND EMAIL_ADDRESS NOT LIKE ('%@S5A.COM')
+	AND EMAIL_ADDRESS NOT LIKE ('%@SAKSINC.COM')
+GROUP BY 
+	1,2,3
+;
+QUIT;
+
+%MACRO LOOPTEST;                                
+%DO I=1 %TO &MTOTCT; 
+
+DATA   EMAIL.STORE_BUYER;
+SET  EMAIL.STORE_BUYER;
+BRAND_NAME=tranwrd(BRAND_NAME, "&&Mnumerical_code&I..", "&&MEnglish&I..");
+RUN;
+
+DATA   EMAIL.STORE_BUYER;
+SET  EMAIL.STORE_BUYER;
+BRAND_NAME=tranwrd(BRAND_NAME, "&&MDisplay&I..", "&&MEnglish&I..");
+RUN;
+%PUT &I.;
+
+%END; 
+%MEND LOOPTEST;                                       /* END OF MACRO */
+%LOOPTEST   
+
+DATA EMAIL.STORE_BUYER;
+SET EMAIL.STORE_BUYER;
+/*FORMAT BRAND_NAME2 $50.;*/
+BRAND_NAME = UPCASE(COMPRESS(TRIM(BRAND_NAME),", & _ . ' -  + * ^ ( ) @ # ! ~ ` '  : ; < > / ? { [ } ] | \ ="));
+RUN;
+
+PROC SQL;
+CREATE TABLE EMAIL.STORE_BUYER_BRAND AS
+SELECT
+	DISTINCT
+		upcase(EMAIL_ADDRESS) as EMAIL_ADDRESS,
+		CATEGORY,
+		COMPRESS(BRAND_NAME) AS BRAND_NAME,
+		SUM(ITEMS) AS ITEMS,
+		MAX(LAST_ORDER_DT) AS LAST_ORDER_DT FORMAT DATE9.
+FROM
+	EMAIL.STORE_BUYER
+GROUP BY 
+	1,2,3;
+QUIT;
+
+data EMAIL.STORE_BUYER_BRAND;
+set EMAIL.STORE_BUYER_BRAND;
+drop p1;
+run;
+
+
+
+PROC SQL;
+CREATE TABLE P1_EMAIL AS
+SELECT DISTINCT EMAIL_ADDRESS, P1  FROM saks.Weekly_data_consolidate_tc  WHERE P1 IS NOT NULL
+UNION
+SELECT DISTINCT EMAIL_ADDRESS, SP1 AS P1 FROM saks. Weekly_data_consolidate_tc WHERE SP1 IS NOT NULL;
+QUIT;
+
+
+proc sql;
+create table EMAIL.id_brand as
+select 
+	distinct
+		a.*, b.p1
+from
+	EMAIL.id_brand a left join P1_EMAIL b 
+	on a.email_address=b.email_address and a.category=b.p1;
+quit;
+
+
+PROC SQL;
+CREATE TABLE EMAIL.STORE_BUYER_BRAND AS
+SELECT
+	DISTINCT
+		A.*, B.P1
+FROM
+	EMAIL.STORE_BUYER_BRAND a LEFT JOIN  P1_EMAIL b 
+	ON UPCASE(a.EMAIL_ADDRESS)=b.EMAIL_ADDRESS and a.CATEGORY=b.P1;
+QUIT;
+
+PROC SQL;
+CREATE TABLE EMAIL.TOTAL_BUYERS_BRAND AS
+SELECT
+	DISTINCT 
+		EMAIL_ADDRESS,
+		CATEGORY,
+		BRAND_NAME,
+		LAST_ORDER_DT,
+		ITEMS,
+		P1,
+		'ONLINE' AS CHANNEL
+FROM
+	EMAIL.ID_BRAND
+UNION all
+SELECT
+	DISTINCT 
+		EMAIL_ADDRESS,
+		CATEGORY,
+		BRAND_NAME,
+		LAST_ORDER_DT,
+		ITEMS,
+		P1,
+		'STORE' AS CHANNEL
+FROM
+	EMAIL.STORE_BUYER_BRAND;
+QUIT;
+
+
+
+DATA EMAIL.TOTAL_BUYERS_BRAND;
+SET  EMAIL.TOTAL_BUYERS_BRAND;
+IF CHANNEL ='ONLINE' THEN OMNI_CHANNEL=2;
+IF CHANNEL ='STORE' THEN OMNI_CHANNEL=1;
+RUN;
+
+PROC SQL;
+CREATE TABLE EMAIL.TOTAL_BUYERS_BRAND AS
+SELECT
+	DISTINCT 
+		EMAIL_ADDRESS,
+		P1,
+		CATEGORY,
+		BRAND_NAME,
+		SUM(ITEMS) AS ITEMS,
+		MAX(LAST_ORDER_DT) AS LAST_ORDER_DT FORMAT DATE9.,
+		MAX(OMNI_CHANNEL) AS OMNI_CHANNEL ,
+		COUNT(DISTINCT CHANNEL) AS PURCHASED_CHANNEL
+FROM
+	EMAIL.TOTAL_BUYERS_BRAND
+GROUP BY 
+	EMAIL_ADDRESS,CATEGORY,BRAND_NAME;
+QUIT;
+
+
+PROC SQL;
+CREATE TABLE EMAIL.email_items_cat  AS
+SELECT
+	DISTINCT 
+		EMAIL_ADDRESS,CATEGORY, 
+		SUM(ITEMS) AS ITEMS_CAT
+FROM
+	EMAIL.TOTAL_BUYERS_BRAND
+GROUP BY 
+	EMAIL_ADDRESS,CATEGORY;
+QUIT;
+
+PROC SORT DATA=EMAIL.TOTAL_BUYERS_BRAND; BY EMAIL_ADDRESS CATEGORY;RUN;
+PROC SORT DATA=EMAIL.email_items_cat; BY EMAIL_ADDRESS CATEGORY;RUN;
+DATA EMAIL.TOTAL_BUYERS_BRAND ;
+MERGE EMAIL.TOTAL_BUYERS_BRAND (IN=A)
+	  EMAIL.email_items_cat (IN=B);
+BY EMAIL_ADDRESS CATEGORY;
+IF A ;
+RUN;
+
+PROC DELETE DATA=EMAIL.email_items_cat;RUN;
+
+
+
+/*RANKING PRIORITY: 
+		BRANDS FROM P1 CATEGORY 
+		=> BRANDS PURCHASED FROM MULTIPLE SHOPPING CHANNEL 
+		=> BRANDS IN THE MOST PURCHASED CATEGORY 
+		=> BRANDS WITH HIGHEST PURCHASED UNITS
+		=> BRANDS WITH THE MOST RECENT PURCHASE DT */
+
+PROC SORT DATA=EMAIL.TOTAL_BUYERS_BRAND; 
+	BY 
+	   EMAIL_ADDRESS 
+	   DESCENDING P1 
+	   DESCENDING PURCHASED_CHANNEL 
+	   DESCENDING OMNI_CHANNEL 
+	   DESCENDING ITEMS_CAT
+	   DESCENDING ITEMS
+	   DESCENDING LAST_ORDER_DT;
+RUN;
+
+
+DATA EMAIL.TOTAL_BUYERS_BRAND;
+SET EMAIL.TOTAL_BUYERS_BRAND;
+IF P1 =CATEGORY THEN P1_FLAG=1;
+RUN;
+
+
+PROC SORT DATA=EMAIL.TOTAL_BUYERS_BRAND;
+BY 
+	EMAIL_ADDRESS
+	DESCENDING P1_FLAG 
+/*	DESCENDING PURCHASE_BROWSE_FLAG_RANK*/
+	DESCENDING PURCHASED_CHANNEL 
+	DESCENDING OMNI_CHANNEL 
+	DESCENDING ITEMS_CAT
+	DESCENDING ITEMS
+	DESCENDING LAST_ORDER_DT
+/*	DESCENDING GOAL_SCORE*/
+/*	DESCENDING DETAIL_CT */
+/*	DESCENDING LAST_BROWSE_DT*/
+;
+RUN;
+
+
+****************************  BROWSERS FROM CXT **************************************;
+
+*****************************************
+*****************************************
+*************DATA COPY FROM CXT**********
+*****************************************
+*****************************************;
+
+/*DEFINE PAGE -BRAND*/
+
+
+
+/*STOPPED AT 11:42 3/2/2016*/
+PROC SORT DATA=EMAIL.TOTAL_BUYERS_BRAND       ; BY EMAIL_ADDRESS CATEGORY BRAND_NAME  ;RUN;
+PROC SORT DATA=email.browse_summary;             BY EMAIL_ADDRESS CATEGORY BRAND_NAME  ;RUN;
+DATA  EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+MERGE  EMAIL.TOTAL_BUYERS_BRAND   (IN=A)      
+	   email.browse_summary(IN=B);
+BY EMAIL_ADDRESS CATEGORY BRAND_NAME ;
+IF A OR B;
+DROP BRAND_RANK;
+RUN;
+
+DATA   EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+SET    EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+IF OMNI_CHANNEL=2 AND PURCHASED_CHANNEL =1 THEN OMNI_FLAG='ONLINE ONLY';
+ELSE IF OMNI_CHANNEL=1 AND PURCHASED_CHANNEL =1 THEN OMNI_FLAG='STORE ONLY';
+ELSE  IF OMNI_CHANNEL=2 AND PURCHASED_CHANNEL =2 THEN OMNI_FLAG='OMNI';
+RUN;
+
+
+DATA  EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+LENGTH PURCHASE_BROWSE_FLAG $20.;
+SET    EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+FORMAT PURCHASE_BROWSE_FLAG $20.;
+INFORMAT PURCHASE_BROWSE_FLAG $20.;
+/*OMNI BUYER & BROWSER*/
+IF OMNI_FLAG='OMNI' AND (brand_page_views>0  OR events >0 or pdp_page_views  >0) THEN PURCHASE_BROWSE_FLAG='OMNI+BROWSE';
+/*ONLINE BUYER ONLY & BROWSE*/
+ELSE IF OMNI_FLAG='ONLINE ONLY' AND  (brand_page_views>0  OR events >0 or pdp_page_views  >0) THEN PURCHASE_BROWSE_FLAG='ONLINE+BROWSE';
+/*STORE BUYER ONLY & BROWSE*/
+ELSE IF OMNI_FLAG='STORE ONLY' AND (brand_page_views>0  OR events >0 or pdp_page_views  >0) THEN PURCHASE_BROWSE_FLAG='STORE+BROWSE';
+/*OMNI BUYER*/
+ELSE IF OMNI_FLAG='OMNI' AND (brand_page_views IN (0,.)  OR events  IN (0,.) OR pdp_page_views  IN (0,.) ) THEN PURCHASE_BROWSE_FLAG='OMNI';
+/*ONLINE ONLY BUYER*/
+ELSE IF OMNI_FLAG='ONLINE ONLY' AND (brand_page_views IN (0,.)  OR events  IN (0,.) OR pdp_page_views  IN (0,.) ) THEN PURCHASE_BROWSE_FLAG='ONLINE';
+/*STORE  ONLY BUYER*/
+ELSE IF OMNI_FLAG='STORE ONLY' AND (brand_page_views IN (0,.)  OR events  IN (0,.) OR pdp_page_views  IN (0,.) ) THEN PURCHASE_BROWSE_FLAG='STORE';
+/*BROWSE ONLY*/
+ELSE IF OMNI_FLAG='' AND (brand_page_views>0  OR events >0 or pdp_page_views  >0) THEN PURCHASE_BROWSE_FLAG='BROWSE ONLY';
+RUN;
+
+DATA   EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+SET    EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+IF PURCHASE_BROWSE_FLAG='OMNI+BROWSE' THEN PURCHASE_BROWSE_FLAG_RANK =7;
+IF PURCHASE_BROWSE_FLAG='OMNI' THEN PURCHASE_BROWSE_FLAG_RANK =6;
+IF PURCHASE_BROWSE_FLAG='ONLINE+BROWSE' THEN PURCHASE_BROWSE_FLAG_RANK =5;
+IF PURCHASE_BROWSE_FLAG='STORE+BROWSE' THEN PURCHASE_BROWSE_FLAG_RANK =4;
+IF PURCHASE_BROWSE_FLAG='ONLINE' THEN PURCHASE_BROWSE_FLAG_RANK =3;
+IF PURCHASE_BROWSE_FLAG='STORE' THEN PURCHASE_BROWSE_FLAG_RANK =2;
+IF PURCHASE_BROWSE_FLAG='BROWSE ONLY' THEN PURCHASE_BROWSE_FLAG_RANK =1;
+RUN;
+
+proc sql;
+select distinct OMNI_FLAG,PURCHASE_BROWSE_FLAG from   EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+quit;
+
+
+DATA   EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+SET    EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+DROP P1;
+RUN;
+
+PROC SQL;
+CREATE TABLE EMAIL.TOTAL_BUYERS_BRAND_BROWSE AS
+SELECT DISTINCT A.*, B. P1 
+FROM EMAIL.TOTAL_BUYERS_BRAND_BROWSE A inner JOIN  P1_EMAIL B ON A.EMAIL_ADDRESS=B.EMAIL_ADDRESS;
+QUIT;
+
+DATA EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+SET EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+IF P1 =CATEGORY THEN P1_FLAG=1;
+RUN;
+
+data EMAIL.BRANDS;
+set PRODUCT;
+if brand_name_orig ne '';
+run;
+
+PROC SQL;CREATE TABLE EMAIL.BRANDS AS SELECT DISTINCT * FROM EMAIL.BRANDS;QUIT;
+
+proc sql;
+create table email.brands as
+select distinct brand_name, brand_name_orig from email.brands where brand_name_orig is not null;
+quit;
+  
+
+
+
+DATA EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+SET  EMAIL.TOTAL_BUYERS_BRAND_BROWSE ;
+DROP S_NO;
+RUN;
+
+
+PROC SORT DATA=EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+BY 
+	EMAIL_ADDRESS
+	DESCENDING P1_FLAG 
+	DESCENDING PURCHASE_BROWSE_FLAG_RANK
+	DESCENDING PURCHASED_CHANNEL 
+	DESCENDING ITEMS_CAT
+	DESCENDING ITEMS
+	DESCENDING LAST_ORDER_DT
+	DESCENDING events
+	DESCENDING brand_page_views
+	DESCENDING pdp_page_views
+	DESCENDING last_refinement_dt
+	DESCENDING last_brand_view_Dt
+	DESCENDING last_pdp_view_Dt
+
+;
+RUN;
+
+
+DATA EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+SET  EMAIL.TOTAL_BUYERS_BRAND_BROWSE ;
+BY EMAIL_ADDRESS;
+IF FIRST.EMAIL_ADDRESS THEN DO;
+		S_NO =0;
+END;
+S_NO+1;
+RUN;
+
+
+PROC SQL;
+CREATE TABLE EMAIL.TOTAL_BUYERS_BRAND_BROWSE AS
+SELECT DISTINCT A.*, B.BRAND_NAME_ORIG
+FROM EMAIL.TOTAL_BUYERS_BRAND_BROWSE A inner JOIN EMAIL.BRANDS B ON A.BRAND_NAME =B.BRAND_NAME;QUIT;
+
+
+DATA EMAIL.EMAIL_BRANDS_ttl;
+SET EMAIL.TOTAL_BUYERS_BRAND_BROWSE;
+KEEP EMAIL_ADDRESS CATEGORY BRAND_NAME BRAND_NAME_ORIG S_NO;
+RUN;
+
+
+proc sort data=EMAIL.EMAIL_BRANDS_ttl; by EMAIL_ADDRESS  BRAND_NAME  S_NO;run;
+
+DATA EMAIL.EMAIL_BRANDS_ttl ;
+SET  EMAIL.EMAIL_BRANDS_ttl ;
+IF EMAIL_ADDRESS=LAG(EMAIL_ADDRESS) 
+AND BRAND_NAME=LAG(BRAND_NAME) THEN DELETE;
+RUN;
+
+proc sort data=EMAIL.EMAIL_BRANDS_ttl; by EMAIL_ADDRESS  S_NO;run;
+
+DATA EMAIL.EMAIL_BRANDS_ttl;
+SET  EMAIL.EMAIL_BRANDS_ttl ;
+BY EMAIL_ADDRESS;
+IF FIRST.EMAIL_ADDRESS THEN DO;
+		S_NO_R =0;
+END;
+S_NO_R+1;
+RUN;
+
+
+
+
+
+
+DATA EMAIL.EMAIL_BRANDS;
+SET EMAIL.EMAIL_BRANDS_ttl;
+WHERE S_NO_R<=3;
+KEEP EMAIL_ADDRESS BRAND_NAME_ORIG S_NO_R;
+RUN;
+
+PROC SORT DATA= EMAIL.EMAIL_BRANDS ; BY EMAIL_ADDRESS S_NO_R;RUN;
+
+
+
+PROC TRANSPOSE 
+DATA=EMAIL.EMAIL_BRANDS 
+OUT= EMAIL.EMAIL_BRANDS_T PREFIX=BRAND_;
+BY EMAIL_ADDRESS ;
+ID S_NO_R;
+VAR BRAND_NAME_ORIG;
+RUN;
+
+%MACRO tranwrd;                                
+%DO I=1 %TO 3; 
+DATA EMAIL.EMAIL_BRANDS_T ;
+SET  EMAIL.EMAIL_BRANDS_T ;
+BRAND_&i=tranwrd(BRAND_&i, ",", " ");
+RUN;
+%END;
+%MEND tranwrd;
+%tranwrd;
+
+
+
+
+
+PROC SQL;
+CREATE TABLE EMAIL.MISSING_BRAND_1 AS
+SELECT * FROM EMAIL.EMAIL_BRANDS_T 
+WHERE BRAND_1 IS NULL AND (BRAND_2  IS NOT NULL OR BRAND_3 IS NOT NULL);
+QUIT;
+
+
+PROC SQL;
+CREATE TABLE CHECKS2 AS
+SELECT A. * FROM EMAIL.TOTAL_BUYERS_BRAND_BROWSE  A INNER JOIN EMAIL.MISSING_BRAND_1 B ON A.EMAIL_ADDRESS=B.EMAIL_ADDRESS;
+QUIT;
+
+
+PROC SQL;
+CREATE TABLE EMAIL_ID AS
+SELECT DISTINCT EMAIL_ADDRESS, EMAIL_ID FROM SDDB.EMAIL_ADDRESS;
+QUIT;
+
+PROC SQL;
+CREATE TABLE EMAIL.TOTAL_BRAND_AFFINITY AS
+SELECT DISTINCT EMAIL_ID, CATEGORY, PURCHASE_BROWSE_FLAG, BRAND_NAME_ORIG, S_NO
+FROM EMAIL_ID A INNER JOIN EMAIL.Total_buyers_brand_browse B ON A.EMAIL_ADDRESS= B.EMAIL_ADDRESS;
+QUIT;
+
