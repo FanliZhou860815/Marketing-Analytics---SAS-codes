@@ -1,0 +1,1149 @@
+/*Browse Abandon */
+
+/*PRODUCT BROWSED YESTERDAY WITH HIGH ENGAGEMENT LEVEL*/
+
+/*KEY METRICS :*/
+/*1.EVENTS*/
+/*2.VIEWS_COUNTS*/
+/*3.HISTORICAL VIEW COUNTS*/
+
+LIBNAME XDB 'F:\XDB' FILELOCKWAIT=600 ;
+LIBNAME FANLI 'F:\FANLI' FILELOCKWAIT=600 ; 
+libname BA 'm:\fanli\XDB\BA' FILELOCKWAIT=600 ;
+LIBNAME ast ASTER DSN=Aster SCHEMA=dw;
+LIBNAME rep ASTER DSN=Aster SCHEMA=replicator;
+LIBNAME raw ASTER DSN=Aster SCHEMA=raw_file;
+libname SDDB oracle user=fanlizhou pass=z658702 path=neworacle schema='SDMRK';
+%put %sysfunc(getoption(work));
+%let workpath= %sysfunc(getoption(work));;
+LIBNAME FZW "&workpath." FILELOCKWAIT=600;
+options user=FZW;
+
+PROC SQL;
+CREATE TABLE xdb.BA_DT_MAX AS
+SELECT DISTINCT  PROGRAM_NAME, MAX(DATE) AS LAST_BA_DT FORMAT DATE9. 
+FROM XDB.Freq_cap_7_days_copy WHERE PROGRAM_NAME = 'BA' GROUP BY 1;
+QUIT;
+
+DATA _null_; 
+set xdb.BA_DT_MAX;
+XDBDT = PUT(TODAY(), YYMMDDN8.);   /*AC BA DATE*/
+CALL SYMPUTX ('XDBDT',XDBDT); 
+BROWSE_DT=PUT(LAST_BA_DT, YYMMDD10.);   
+CALL SYMPUTX ('BROWSE_DT',BROWSE_DT); 
+CUT_START=PUT(TODAY()-2, YYMMDD10.);   
+CALL SYMPUTX ('CUT_START',CUT_START);
+CUT_END=PUT(TODAY()-1, YYMMDD10.);   
+CALL SYMPUTX ('CUT_END',CUT_END); 
+RUN;
+
+
+PROC PRINTTO LOG="F:\XDB\LOG_ADOBE_BA_DAILY_&XDBDT..TXT"; RUN;
+
+%PUT &XDBDT.;
+%PUT &BROWSE_DT.;
+%PUT &CUT_START.;
+%PUT &CUT_END.;
+
+DATA PRODUCT;
+SET sddb.product ( dbsastype= ( PRD_ID='char(16)') );
+WHERE
+PRD_ID IS NOT NULL
+AND GROUP_ID IS NOT NULL
+AND BRAND_NAME IS NOT NULL
+AND ACTIVE_INDICATOR ='A'
+AND DEACTIVE_IND ='N'
+AND READYFORPROD_FLAG NE 'F'
+AND READYFORPROD_TIMER <=DHMS(TODAY(),0,0,0)
+AND SKU_LIST_PRICE >0
+and product_code not in ('0400011348329','0400011348331')
+;
+KEEP  PRODUCT_CODE PRD_ID BRAND_NAME GROUP_ID BM_DESC BACKORDER_INDICATOR
+	  WAREHOUSE_SELLABLE_UNITS WAREHOUSE_BACKORDER_UNITS STORE_INVENTORY
+	  SKU_LIST_PRICE READYFORPROD_FLAG READYFORPROD_TIMER SKU_SALE_PRICE SKU_LIST_PRICE;
+RUN;
+
+DATA PRODUCT;
+SET PRODUCT;
+IF WAREHOUSE_BACKORDER_UNITS>0 AND BACKORDER_INDICATOR ='F'  THEN WAREHOUSE_BACKORDER_UNITS=0;
+RUN;
+
+proc sql;
+create table saks_inventory as
+select
+	distinct
+		GROUP_ID,
+		product_code  ,
+		prd_id ,
+		brand_name ,
+		bm_desc  ,
+		sum(WAREHOUSE_SELLABLE_UNITS+WAREHOUSE_BACKORDER_UNITS+ STORE_INVENTORY) AS QUANTITY,
+		MAX(SKU_SALE_PRICE) AS sale_price,
+		MAX(SKU_LIST_PRICE) AS retail_price,
+		READYFORPROD_FLAG ,
+		READYFORPROD_TIMER
+from
+	product
+group by
+	product_code
+;
+quit;
+
+DATA saks_inventory ;
+SET saks_inventory ;
+WHERE QUANTITY >=3;
+RUN;
+
+
+/**/
+/*proc sql; */
+/*connect to ASTER as ast (DSN=Aster);*/
+/*create table BA.adobe_loading_dt_2 as*/
+/*SELECT *FROM connection to ast (*/
+/*select DISTINCT DATE_FILTER*/
+/*from dw.fact_omni_saks_events  b */
+/*WHERE PRODUCT_CODE IS NOT NULL */
+/*order by DATE_FILTER desc*/
+/**/
+/*);Disconnect from ast;*/
+/*Quit;*/
+
+/**/
+/*proc sql; */
+/*connect to ASTER as ast (DSN=Aster);*/
+/*create table BA.EVENTS_SAMPLE_CNTS as*/
+/*SELECT *FROM connection to ast (*/
+/*select DISTINCT EVENT_TYPE_ID, EVENT_NAME, COUNT(DISTINCT EVENT_UUID) AS EVENT_CNTS*/
+/*from dw.fact_omni_saks_events  b */
+/*WHERE PRODUCT_CODE IS NOT NULL AND DATE_FILTER = (TIMESTAMP "&BROWSE_DT.")*/
+/*GROUP BY 1,2*/
+/*);Disconnect from ast;*/
+/*Quit;*/
+
+/*PROC SQL; SELECT DISTINCT EVENT_TYPE_ID, EVENT_NAME FROM BA.EVENTS_SAMPLE_CNTS;QUIT;*/
+/*event_type_id event_name */
+/*5  Product Color Change */
+/*6  Product Size Change */
+/*12 Add to bag */
+/*14 Video View */
+/*15 BOPUS - Add to Bag */
+/*16 BOPUS - Purchase */
+/*17 BOPUS - Start */
+/*24 Alt Image Click */
+/*27 Remove from Bag */
+/*33 Expand Full Size */
+/*34 Add to Favorites */
+/*35 Remove from Favorites */
+
+PROC SQL; SELECT DISTINCT COUNT(DISTINCT EVENT_TYPE_ID) INTO: I FROM BA.EVENTS_SAMPLE_CNTS;QUIT;
+%PUT &I.;
+
+PROC SQL outobs=&I.; ;
+SELECT DISTINCT EVENT_TYPE_ID INTO : EVENTS_IDS SEPARATED BY "," FROM BA.EVENTS_SAMPLE_CNTS ORDER BY EVENT_TYPE_ID;
+QUIT;
+%put &EVENTS_IDS.;
+
+data BA.EVENTS_SAMPLE_CNTS ;
+set  BA.EVENTS_SAMPLE_CNTS ;
+varname = compress("events_cnts_"||EVENT_TYPE_ID);
+run;
+
+
+PROC SQL outobs=&I.; ;
+SELECT DISTINCT VARNAME INTO : VARNAME_IDS SEPARATED BY "," FROM BA.EVENTS_SAMPLE_CNTS ORDER BY EVENT_TYPE_ID;
+QUIT;
+%put &VARNAME_IDS.;
+
+
+PROC SQL; 
+SELECT 
+	 PUT(COUNT(DISTINCT name),2.) INTO: I2 
+FROM BA.TRAINING_SET_7D_CONTENTS
+where FORMAT ='' AND name <> 'purchased_flag';QUIT;
+%PUT &I2.;
+
+PROC SQL; 
+SELECT DISTINCT name INTO: VAR_1 -:  VAR_&I2.   
+FROM BA.TRAINING_SET_7D_CONTENTS  where FORMAT ='' AND name <> 'purchased_flag';
+QUIT;
+
+PROC SQL;SELECT Y_N_PCT INTO: Y_PCT_CAT FROM BA.PURCHASE_Y_N WHERE PURCHASED_FLAG=1 ;QUIT;
+PROC SQL;SELECT Y_N_PCT INTO: N_PCT_CAT FROM BA.PURCHASE_Y_N WHERE PURCHASED_FLAG=0; QUIT;
+%PUT &Y_PCT_CAT.;
+%PUT &N_PCT_CAT.;
+
+
+
+
+
+
+proc s3  REGION = USEAST config="C:/.aws/cofig_sas.conf";
+get  "/marketing-analytics-pal/dev/etl/source/web_ba_file/current/web_ba_file.csv" "M:/FANLI/XDB/BA/S3_BA_&XDBDT..csv";
+RUN;
+
+/**/
+/*proc import datafile= "M:/FANLI/XDB/BA/S3_BA_&XDBDT..csv" replace */
+/*dbms=csv*/
+/*out= BA.YEST_new;*/
+/*getnames=yes;*/
+/*guessingrows=32767;*/
+/*run;*/
+
+
+
+      data BA.YEST    ;
+      %let _EFIERR_ = 0; /* set the ERROR detection macro variable */
+      infile 'M:/FANLI/XDB/BA/S3_BA_20200921.csv' delimiter = ',' MISSOVER DSD lrecl=32767
+ firstobs=2 ;
+         informat CHANNEL $5. ;
+         informat EMAIL $40. ;
+         informat PRODUCT_CODE $15. ;
+         informat DATE_FILTER $25. ;
+         informat PRODUCT_FINDING_METHODS $40. ;
+         informat MARKETING_CHANNEL $22. ;
+         informat SEC_ON_PAGE best32. ;
+         informat PAGE_VIEWS best32. ;
+         informat HIST_SEC_ON_PAGE best32. ;
+         informat HIST_PAGE_VIEWS best32. ;
+         informat HIST_LAST_VIEW_DT $25. ;
+         informat EVENT_5 best32. ;
+         informat EVENT_6 best32. ;
+         informat EVENT_12 best32. ;
+         informat EVENT_17 best32. ;
+         informat EVENT_34 best32. ;
+		 informat PURCHASED_FLAG best32. ;
+        format CHANNEL $5. ;
+         format EMAIL $40. ;
+         format PRODUCT_CODE $15. ;
+         format DATE_FILTER $25. ;
+         format PRODUCT_FINDING_METHODS $40. ;
+         format MARKETING_CHANNEL $22. ;
+         format SEC_ON_PAGE best32. ;
+         format PAGE_VIEWS best32. ;
+         format HIST_SEC_ON_PAGE best32. ;
+         format HIST_PAGE_VIEWS best32. ;
+         format HIST_LAST_VIEW_DT $25. ;
+         format EVENT_5 best32. ;
+         format EVENT_6 best32. ;
+         format EVENT_12 best32. ;
+         format EVENT_17 best32. ;
+         format EVENT_34 best32. ;
+		 format PURCHASED_FLAG best32. ;
+      input
+                  CHANNEL  $
+                  EMAIL  $
+                  PRODUCT_CODE  $
+                  DATE_FILTER  $
+                  PRODUCT_FINDING_METHODS  $
+                  MARKETING_CHANNEL  $
+                  SEC_ON_PAGE  
+                  PAGE_VIEWS
+                  HIST_SEC_ON_PAGE  
+                  HIST_PAGE_VIEWS  
+                  HIST_LAST_VIEW_DT  $
+                  EVENT_5  
+                  EVENT_6  
+                  EVENT_12  
+                  EVENT_17  
+                  EVENT_34  
+                  PURCHASED_FLAG  
+      ;
+      if _ERROR_ then call symputx('_EFIERR_',1);  /* set ERROR detection macro variable */
+      run;
+
+
+PROC PRINT DATA=BA.YEST(OBS=100);RUN;
+
+
+/*/*/*/*MODEL APPLY*/*/*/*/;
+proc sql; 
+connect to ASTER as ast (DSN=Aster);
+create table BA.YEST as
+SELECT * FROM connection to ast (
+
+SELECT 
+	PAGE.*, 
+	HIST.HIST_SEC_ON_PAGE,
+	HIST.HIST_PAGE_VIEWS,
+	HIST.HIST_LAST_VIEW_DT,
+	EVENTS. &VARNAME_IDS.,
+	ORD.PURCHASED_FLAG
+FROM 
+	(SELECT
+		UUID.EMAIL,
+		VIEWS.PRODUCT_CODE,
+		VIEWS.DATE_FILTER,
+		MAX(VIEWS.product_finding_methods) as product_finding_methods ,
+		MAX(VIEWS.marketing_channel) AS marketing_channel,
+		SUM(VIEWS.SEC_ON_PAGE) AS SEC_ON_PAGE, 
+		SUM(VIEWS.PAGE_VIEWS) AS PAGE_VIEWS
+	FROM 
+		(SELECT VISITOR_DEVICE_UUID, 
+				product_code,
+				DATE_FILTER,
+				MAX(product_finding_methods) as product_finding_methods ,
+				MAX(marketing_channel) AS marketing_channel,
+				SUM(sec_on_page) AS SEC_ON_PAGE,
+				COUNT(page_view_uuid) AS PAGE_VIEWS
+		FROM dw.fact_omni_saks_page_views  
+		WHERE 
+			DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.")
+			AND LOWER(page_type) IN ('product detail','quick look','quicklook','productdetail')
+		GROUP BY 
+			VISITOR_DEVICE_UUID, 
+			product_code,
+			DATE_FILTER
+			)  VIEWS
+		INNER JOIN 
+			(SELECT DISTINCT VISITOR_DEVICE_UUID, VISITOR_UUID, EMAIL FROM dw.dim_visitor_devices
+			 WHERE TRIM(EMAIL) <> "" AND SOURCE = 'saks') AS UUID ON VIEWS.VISITOR_DEVICE_UUID = UUID. VISITOR_DEVICE_UUID 
+		left join (select visitor_device_uuid from dw.fact_omni_saks_sessions where session_attribution_campaign ='COMX' ) comx
+  		on UUID.visitor_device_uuid = comx.visitor_device_uuid
+	WHERE comx.visitor_device_uuid IS NULL
+	GROUP BY 
+		UUID.EMAIL,
+		VIEWS.PRODUCT_CODE,
+		VIEWS.DATE_FILTER  ) AS PAGE 
+
+	LEFT JOIN 
+
+	(SELECT
+		UUID.EMAIL,
+		VIEWS.PRODUCT_CODE,
+		VIEWS.DATE_FILTER ,
+		SUM(SEC_ON_PAGE) AS HIST_SEC_ON_PAGE, 
+		SUM(PAGE_VIEWS) AS HIST_PAGE_VIEWS,
+		MAX(LAST_VIEW_DT) AS HIST_LAST_VIEW_DT
+	FROM 
+		(SELECT BA.VISITOR_DEVICE_UUID, 
+				BA.DATE_FILTER,
+				BA.product_code, 
+				SUM(sec_on_page) AS SEC_ON_PAGE,
+				COUNT(page_view_uuid) AS PAGE_VIEWS,
+				MAX(PV.DATE_FILTER) AS LAST_VIEW_DT
+		FROM dw.fact_omni_saks_page_views  PV
+		    INNER JOIN  (SELECT distinct VISITOR_DEVICE_UUID, PRODUCT_CODE, DATE_FILTER
+						FROM dw.fact_omni_saks_page_views
+						WHERE DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.")
+							  AND LOWER(page_type) IN ('product detail','quick look','quicklook','productdetail')
+						) BA 
+			ON PV.VISITOR_DEVICE_UUID = BA.VISITOR_DEVICE_UUID AND PV.product_code=BA.product_code AND PV.DATE_FILTER < BA.DATE_FILTER
+		WHERE 
+			LOWER(page_type) IN ('product detail','quick look','quicklook','productdetail')
+		GROUP  BY BA.VISITOR_DEVICE_UUID, 
+				BA.DATE_FILTER,
+				BA.product_code) as VIEWS
+		INNER JOIN 
+			(SELECT DISTINCT VISITOR_DEVICE_UUID, VISITOR_UUID, EMAIL FROM dw.dim_visitor_devices
+			 WHERE TRIM(EMAIL) <> "" AND SOURCE = 'saks') AS UUID ON VIEWS.VISITOR_DEVICE_UUID = UUID. VISITOR_DEVICE_UUID 
+	GROUP BY 
+		UUID.EMAIL,
+		VIEWS.PRODUCT_CODE,
+		VIEWS.DATE_FILTER ) HIST 
+		ON PAGE.EMAIL= HIST.EMAIL AND PAGE.PRODUCT_CODE= HIST.PRODUCT_CODE AND PAGE.DATE_FILTER= HIST.DATE_FILTER 
+
+	LEFT JOIN 
+
+	pivot(
+	ON ( SELECT UUID.EMAIL,PRODUCT_CODE,DATE_FILTER,EVENT_TYPE_ID, SUM(EVENTS_CNTS) AS EVENTS_CNTS
+		 FROM 
+			(select  
+				VISITOR_DEVICE_UUID,
+				PRODUCT_CODE, 
+				DATE_FILTER,
+				EVENT_TYPE_ID, 
+				COUNT(DISTINCT  EVENT_UUID) AS EVENTS_CNTS
+		 	from dw.fact_omni_saks_events  events
+			where 
+				DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.")
+				AND PRODUCT_CODE IS NOT NULL 
+				AND EVENT_TYPE_ID IN (&EVENTS_IDS.)
+			group by VISITOR_DEVICE_UUID,  PRODUCT_CODE, DATE_FILTER,EVENT_TYPE_ID) EVENTS  
+			INNER JOIN 
+			(SELECT DISTINCT VISITOR_DEVICE_UUID, VISITOR_UUID, EMAIL FROM dw.dim_visitor_devices
+			 WHERE TRIM(EMAIL) <> "" AND SOURCE = 'saks') AS UUID ON EVENTS.VISITOR_DEVICE_UUID = UUID. VISITOR_DEVICE_UUID 
+			 GROUP BY UUID.EMAIL,PRODUCT_CODE,DATE_FILTER,EVENT_TYPE_ID
+	)
+	PARTITION BY EMAIL,PRODUCT_CODE,DATE_FILTER
+	ORDER BY EVENT_TYPE_ID::varchar
+	PARTITIONS('EMAIL','PRODUCT_CODE','DATE_FILTER')
+	PIVOT_KEYS(&EVENTS_IDS.)
+	PIVOT_COLUMN('EVENT_TYPE_ID')
+	METRICS('EVENTS_CNTS')
+	)    AS EVENTS 
+	ON 	PAGE.EMAIL= EVENTS.EMAIL AND PAGE.PRODUCT_CODE= EVENTS.PRODUCT_CODE AND PAGE.DATE_FILTER= EVENTS.DATE_FILTER 
+
+LEFT JOIN 
+(
+SELECT EMAIL, ORDER_NUMBER, DATE_FILTER ,PRODUCT_CODE , 1 AS PURCHASED_FLAG
+	FROM 
+		(SELECT  DISTINCT 
+				VISITOR_DEVICE_UUID,
+				CAST(VALUE1 AS INTEGER) AS ORDER_NUMBER,
+				DATE_FILTER
+		 	FROM dw.fact_omni_saks_events  events
+			where 
+				DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.")
+				AND EVENT_TYPE_ID = 9 
+				AND VALUE1 IS NOT NULL) AS CT
+		INNER JOIN 
+			(SELECT DISTINCT VISITOR_DEVICE_UUID, VISITOR_UUID, EMAIL FROM dw.dim_visitor_devices
+			 WHERE TRIM(EMAIL) <> "" AND SOURCE = 'saks') AS UUID ON CT.VISITOR_DEVICE_UUID = UUID. VISITOR_DEVICE_UUID 
+		INNER JOIN 
+			(SELECT 
+				DISTINCT ORDERNUM, PRODUCT_CODE 
+			 FROM REPLICATOR.hbc_dw_mrep_bi_sale AS SL 
+			 INNER JOIN (select distinct product_code, item from replicator.hbc_dw_mrep_bi_product) AS PRD  
+			 ON SL.ITEM= PRD.item 
+			 WHERE orderdate 	>= (TIMESTAMP "&BROWSE_DT.")
+			  ) MREP ON CT.ORDER_NUMBER= MREP.ORDERNUM
+
+	) AS ORD  ON PAGE.EMAIL= ORD.EMAIL AND PAGE.DATE_FILTER=ORD.DATE_FILTER AND PAGE.PRODUCT_CODE= ORD.PRODUCT_CODE
+
+/*ADDING APP DATA*/
+UNION ALL
+
+SELECT 
+	PAGE.*, 
+	HIST.HIST_SEC_ON_PAGE,
+	HIST.HIST_PAGE_VIEWS,
+	HIST.HIST_LAST_VIEW_DT,
+	EVENTS. &VARNAME_IDS.,
+	ORD.PURCHASED_FLAG
+FROM 
+	(SELECT
+		UUID.EMAIL,
+		VIEWS.PRODUCT_CODE,
+		VIEWS.DATE_FILTER,
+		MAX(VIEWS.product_finding_methods) as product_finding_methods ,
+		MAX(VIEWS.marketing_channel) AS marketing_channel,
+		SUM(VIEWS.SEC_ON_PAGE) AS SEC_ON_PAGE, 
+		SUM(VIEWS.PAGE_VIEWS) AS PAGE_VIEWS
+	FROM 
+		(SELECT VISITOR_DEVICE_UUID, 
+				product_code,
+				DATE_FILTER,
+				MAX(product_finding_methods) as product_finding_methods ,
+				MAX(marketing_channel) AS marketing_channel,
+				SUM(sec_on_page) AS SEC_ON_PAGE,
+				COUNT(page_view_uuid) AS PAGE_VIEWS
+		FROM dw.fact_omni_saks_APP_page_views  
+		WHERE 
+			DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.")
+			AND LOWER(page_type) IN ('product detail','quick look','quicklook','productdetail')
+		GROUP BY 
+			VISITOR_DEVICE_UUID, 
+			product_code,
+			DATE_FILTER
+			)  VIEWS
+		INNER JOIN 
+			(SELECT DISTINCT VISITOR_DEVICE_UUID, VISITOR_UUID, EMAIL FROM dw.dim_visitor_devices
+			 WHERE TRIM(EMAIL) <> "" AND SOURCE = 'saks') AS UUID ON VIEWS.VISITOR_DEVICE_UUID = UUID. VISITOR_DEVICE_UUID 
+		left join (select visitor_device_uuid from dw.fact_omni_saks_sessions where session_attribution_campaign ='COMX' ) comx
+  		on UUID.visitor_device_uuid = comx.visitor_device_uuid
+	WHERE comx.visitor_device_uuid IS NULL
+	GROUP BY 
+		UUID.EMAIL,
+		VIEWS.PRODUCT_CODE,
+		VIEWS.DATE_FILTER  ) AS PAGE 
+
+	LEFT JOIN 
+
+	(SELECT
+		UUID.EMAIL,
+		VIEWS.PRODUCT_CODE,
+		VIEWS.DATE_FILTER ,
+		SUM(SEC_ON_PAGE) AS HIST_SEC_ON_PAGE, 
+		SUM(PAGE_VIEWS) AS HIST_PAGE_VIEWS,
+		MAX(LAST_VIEW_DT) AS HIST_LAST_VIEW_DT
+	FROM 
+		(SELECT BA.VISITOR_DEVICE_UUID, 
+				BA.DATE_FILTER,
+				BA.product_code, 
+				SUM(sec_on_page) AS SEC_ON_PAGE,
+				COUNT(page_view_uuid) AS PAGE_VIEWS,
+				MAX(PV.DATE_FILTER) AS LAST_VIEW_DT
+		FROM dw.fact_omni_saks_APP_page_views  PV
+		    INNER JOIN  (SELECT distinct VISITOR_DEVICE_UUID, PRODUCT_CODE, DATE_FILTER
+						FROM dw.fact_omni_saks_page_views
+						WHERE DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.")
+							  AND LOWER(page_type) IN ('product detail','quick look','quicklook','productdetail')
+						) BA 
+			ON PV.VISITOR_DEVICE_UUID = BA.VISITOR_DEVICE_UUID AND PV.product_code=BA.product_code AND PV.DATE_FILTER < BA.DATE_FILTER
+		WHERE 
+			LOWER(page_type) IN ('product detail','quick look','quicklook','productdetail')
+		GROUP  BY BA.VISITOR_DEVICE_UUID, 
+				BA.DATE_FILTER,
+				BA.product_code) as VIEWS
+		INNER JOIN 
+			(SELECT DISTINCT VISITOR_DEVICE_UUID, VISITOR_UUID, EMAIL FROM dw.dim_visitor_devices
+			 WHERE TRIM(EMAIL) <> "" AND SOURCE = 'saks') AS UUID ON VIEWS.VISITOR_DEVICE_UUID = UUID. VISITOR_DEVICE_UUID 
+	GROUP BY 
+		UUID.EMAIL,
+		VIEWS.PRODUCT_CODE,
+		VIEWS.DATE_FILTER ) HIST 
+		ON PAGE.EMAIL= HIST.EMAIL AND PAGE.PRODUCT_CODE= HIST.PRODUCT_CODE AND PAGE.DATE_FILTER= HIST.DATE_FILTER 
+
+	LEFT JOIN 
+
+	pivot(
+	ON ( SELECT UUID.EMAIL,PRODUCT_CODE,DATE_FILTER,EVENT_TYPE_ID, SUM(EVENTS_CNTS) AS EVENTS_CNTS
+		 FROM 
+			(select  
+				VISITOR_DEVICE_UUID,
+				PRODUCT_CODE, 
+				DATE_FILTER,
+				EVENT_TYPE_ID, 
+				COUNT(DISTINCT  EVENT_UUID) AS EVENTS_CNTS
+		 	from dw.fact_omni_saks_APP_events  events
+			where 
+				DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.")
+				AND PRODUCT_CODE IS NOT NULL 
+				AND EVENT_TYPE_ID IN (&EVENTS_IDS.)
+			group by VISITOR_DEVICE_UUID,  PRODUCT_CODE, DATE_FILTER,EVENT_TYPE_ID) EVENTS  
+			INNER JOIN 
+			(SELECT DISTINCT VISITOR_DEVICE_UUID, VISITOR_UUID, EMAIL FROM dw.dim_visitor_devices
+			 WHERE TRIM(EMAIL) <> "" AND SOURCE = 'saks') AS UUID ON EVENTS.VISITOR_DEVICE_UUID = UUID. VISITOR_DEVICE_UUID 
+			 GROUP BY UUID.EMAIL,PRODUCT_CODE,DATE_FILTER,EVENT_TYPE_ID
+	)
+	PARTITION BY EMAIL,PRODUCT_CODE,DATE_FILTER
+	ORDER BY EVENT_TYPE_ID::varchar
+	PARTITIONS('EMAIL','PRODUCT_CODE','DATE_FILTER')
+	PIVOT_KEYS(&EVENTS_IDS.)
+	PIVOT_COLUMN('EVENT_TYPE_ID')
+	METRICS('EVENTS_CNTS')
+	)    AS EVENTS 
+	ON 	PAGE.EMAIL= EVENTS.EMAIL AND PAGE.PRODUCT_CODE= EVENTS.PRODUCT_CODE AND PAGE.DATE_FILTER= EVENTS.DATE_FILTER 
+
+LEFT JOIN 
+(
+SELECT EMAIL, ORDER_NUMBER, DATE_FILTER ,PRODUCT_CODE , 1 AS PURCHASED_FLAG
+	FROM 
+		(SELECT  DISTINCT 
+				VISITOR_DEVICE_UUID,
+				CAST(VALUE1 AS INTEGER) AS ORDER_NUMBER,
+				DATE_FILTER
+		 	FROM dw.fact_omni_saks_APP_events  events
+			where 
+				DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.")
+				AND EVENT_TYPE_ID = 9 
+				AND VALUE1 IS NOT NULL) AS CT
+		INNER JOIN 
+			(SELECT DISTINCT VISITOR_DEVICE_UUID, VISITOR_UUID, EMAIL FROM dw.dim_visitor_devices
+			 WHERE TRIM(EMAIL) <> "" AND SOURCE = 'saks') AS UUID ON CT.VISITOR_DEVICE_UUID = UUID. VISITOR_DEVICE_UUID 
+		INNER JOIN 
+			(SELECT 
+				DISTINCT ORDERNUM, PRODUCT_CODE 
+			 FROM REPLICATOR.hbc_dw_mrep_bi_sale AS SL 
+			 INNER JOIN (select distinct product_code, item from replicator.hbc_dw_mrep_bi_product) AS PRD  
+			 ON SL.ITEM= PRD.item 
+			 WHERE orderdate 	>= (TIMESTAMP "&BROWSE_DT.")
+			  ) MREP ON CT.ORDER_NUMBER= MREP.ORDERNUM
+
+	) AS ORD  ON PAGE.EMAIL= ORD.EMAIL AND PAGE.DATE_FILTER=ORD.DATE_FILTER AND PAGE.PRODUCT_CODE= ORD.PRODUCT_CODE
+
+
+);
+Disconnect from ast;
+Quit;
+
+PROC CONTENTS DATA=BA.YEST;RUN;
+
+
+PROC SQL;
+CREATE TABLE BA.YEST  AS 
+SELECT 
+	email,
+	product_code,
+	date_filter,
+	MAX(product_finding_methods) AS product_finding_methods, 
+	MAX(marketing_channel) AS marketing_channel, 
+	SUM(sec_on_page) AS sec_on_page,
+	SUM(page_views) AS page_views,
+	SUM(hist_sec_on_page) AS hist_sec_on_page,
+	SUM(hist_page_views) AS hist_page_views,
+	MAX(hist_last_view_dt) AS hist_last_view_dt,
+	sum(events_cnts_5) AS events_cnts_5,
+	sum(events_cnts_6) AS events_cnts_6,
+	sum(events_cnts_12) AS events_cnts_12 ,
+	sum(events_cnts_14) AS events_cnts_14,
+	sum(events_cnts_15) AS events_cnts_15,
+	sum(events_cnts_16) AS events_cnts_16,
+	sum(events_cnts_17) AS events_cnts_17,
+	sum(events_cnts_24) AS events_cnts_24,
+	sum(events_cnts_27) AS events_cnts_27,
+	sum(events_cnts_33) AS events_cnts_33,
+	sum(events_cnts_34) AS events_cnts_34,
+	sum(events_cnts_35) AS events_cnts_35,
+/*	sum(event_5) AS events_cnts_5,*/
+/*	sum(event_6) AS events_cnts_6,*/
+/*	sum(event_12) AS events_cnts_12 ,*/
+/*	sum(event_14) AS events_cnts_14,*/
+/*	sum(event_15) AS events_cnts_15,*/
+/*	sum(event_16) AS events_cnts_16,*/
+/*	sum(event_17) AS events_cnts_17,*/
+/*	sum(event_24) AS events_cnts_24,*/
+/*	sum(event_27) AS events_cnts_27,*/
+/*	sum(event_33) AS events_cnts_33,*/
+/*	sum(event_34) AS events_cnts_34,*/
+/*	sum(event_35) AS events_cnts_35,*/
+	MAX(purchased_flag) AS purchased_flag
+
+FROM
+	BA.YEST 
+GROUP BY email,
+	product_code,
+	date_filter;
+QUIT;
+
+proc print data=ba.yest(obs=100);run;
+
+
+
+proc sql;
+select distinct DATE_FILTER, PURCHASED_FLAG, count(*) as obs
+from BA.YEST 
+group by 1,2;
+quit;
+
+
+PROC CONTENTS DATA= BA.YEST ; RUN;
+
+DATA  BA.YEST  (DROP=i _name_);                                                    
+SET  BA.YEST (where =(PURCHASED_FLAG<> 1 ));                                                    
+TSL_VIEW =INTCK('DAY',DATEPART(hist_last_view_dt),DATEPART(DATE_FILTER)); 
+product_finding_methods = UPCASE(COMPRESS(TRIM(product_finding_methods),"& _ . ' - 1234567890 + * ^ ( ) @ # ! ~ ` '  : ; < > / ? { [ } ] | \ ="));
+marketing_channel = UPCASE(COMPRESS(TRIM(marketing_channel),"& _ . ' - 1234567890 + * ^ ( ) @ # ! ~ ` '  : ; < > / ? { [ } ] | \ ="));
+  ARRAY testmiss(*)events_cnts_5--purchased_flag;
+  DO i = 1 TO dim(testmiss);                                              
+    IF testmiss(i)=. THEN testmiss(i)=0;
+  END;      
+ 
+IF marketing_channel=""  THEN DO ;
+	IF index(product_finding_methods,"EXTERNALCHANNEL")> 0 then do ;
+		marketing_channel =  SUBSTR(product_finding_methods, FIND(product_finding_methods,"EXTERNALCHANNEL")+15,20);
+	END;
+END;
+
+IF product_finding_methods="" THEN product_finding_methods = "MISS";
+IF marketing_channel="" THEN marketing_channel = "MISS";
+IF hist_page_views =. THEN hist_page_views=0;
+IF hist_sec_on_page =. THEN hist_sec_on_page=0;
+IF page_views =. THEN page_views=0;
+IF sec_on_page =. THEN sec_on_page=0;
+IF TSL_VIEW = . THEN TSL_VIEW= 9999;
+RUN;
+
+
+PROC SQL;
+CONNECT TO oracle as db ( path=neworacle user=fanlizhou pass=z658702 );
+CREATE TABLE PURCHASE   AS
+select * from connection to db
+	(
+	SELECT DISTINCT 
+	INDIVIDUAL_ID , PRODUCT_CODE
+FROM 
+	(SELECT INDIVIDUAL_ID, SKU FROM SDMRK.ORDERS 
+	 WHERE 
+			trunc(to_date(ORDERDATE),'DD') >='01-AUG-2017'
+	AND INDIVIDUAL_ID IS NOT NULL AND INDIVIDUAL_ID NOT IN (0,999999999)) A 
+	INNER JOIN  (SELECT DISTINCT SKU, PRODUCT_CODE FROM SDMRK.PRODUCT) B ON A.SKU=B.SKU
+/*	INNER JOIN  (SELECT DISTINCT INDIVIDUAL_ID, EMAIL_ADDRESS FROM SDMRK.CUSTOMER */
+/*	WHERE INDIVIDUAL_ID IS NOT NULL AND INDIVIDUAL_ID NOT IN (0,999999999)) C */
+/*	ON A.INDIVIDUAL_ID=C.INDIVIDUAL_ID*/
+)
+;
+Disconnect from db;
+Quit;
+
+PROC SQL;
+CREATE TABLE EMAIL_IND AS
+SELECT DISTINCT INDIVIDUAL_ID, EMAIL_ADDRESS FROM SDDB.CUSTOMER 
+WHERE INDIVIDUAL_ID IS NOT NULL AND INDIVIDUAL_ID NOT IN (0,999999999)  ;
+QUIT;
+
+PROC SQL;
+CREATE TABLE EMAIL_ID AS
+SELECT DISTINCT INDIVIDUAL_ID, EMAIL_ADDRESS FROM EMAIL_IND GROUP BY INDIVIDUAL_ID HAVING COUNT(DISTINCT EMAIL_aDDRESS) <=10;
+QUIT;
+
+PROC SQL;
+CREATE TABLE PURCHASE_EML AS
+SELECT DISTINCT EMAIL_ADDRESS, PRODUCT_CODE FROM PURCHASE A INNER JOIN EMAIL_ID B ON A.INDIVIDUAL_ID=B.INDIVIDUAL_ID;
+QUIT;
+
+
+
+PROC SQL;
+CONNECT TO oracle as db ( path=neworacle user=fanlizhou pass=z658702 );
+CREATE TABLE PURCHASE_eml2   AS
+select * from connection to db
+	(
+	SELECT DISTINCT 
+	email_address , PRODUCT_CODE
+FROM 
+	(SELECT customer_id, SKU FROM SDMRK.ORDERS 
+	 WHERE 
+			trunc(to_date(ORDERDATE),'DD') >='01-AUG-2018'
+	AND INDIVIDUAL_ID IS NOT NULL AND INDIVIDUAL_ID NOT IN (0,999999999)) A 
+	INNER JOIN   SDMRK.CUSTOMER C ON A.CUSTOMER_ID=C.CUSTOMER_ID
+	INNER JOIN  (SELECT DISTINCT SKU, PRODUCT_CODE FROM SDMRK.PRODUCT) B ON A.SKU=B.SKU
+/*	INNER JOIN  (SELECT DISTINCT INDIVIDUAL_ID, EMAIL_ADDRESS FROM SDMRK.CUSTOMER */
+/*	WHERE INDIVIDUAL_ID IS NOT NULL AND INDIVIDUAL_ID NOT IN (0,999999999)) C */
+/*	ON A.INDIVIDUAL_ID=C.INDIVIDUAL_ID*/
+)
+;
+Disconnect from db;
+Quit;
+
+DATA PURCHASE_eml; SET PURCHASE_eml2 PURCHASE_eml;RUN;
+
+
+
+PROC SQL;
+CREATE TABLE BA.YEST AS
+SELECT A.*
+FROM BA.YEST A LEFT JOIN PURCHASE_EML B ON UPCASE(A.EMAIL)= UPCASE(B.EMAIL_ADDRESS) AND A.PRODUCT_CODE=B.PRODUCT_CODE
+WHERE B.PRODUCT_CODE IS NULL;
+QUIT;
+
+
+
+
+%MACRO NORMALIZE;
+%DO I=1 %TO &I2.;
+%put i=&i.;
+
+DATA BA.YEST ;
+SET  BA.YEST;
+DROP  &&VAR_&I.._REV ;
+RUN;
+
+PROC SQL;
+CREATE TABLE  BA.YEST AS 
+SELECT
+	DISTINCT 
+		A.*, 
+		CASE WHEN &&VAR_&I.. >=(SELECT P_0 FROM BA.&&VAR_&I..) AND &&VAR_&I..< (SELECT P_25 FROM BA.&&VAR_&I..) THEN &&VAR_&I..
+			 WHEN &&VAR_&I.. >=(SELECT P_25 FROM BA.&&VAR_&I..) AND &&VAR_&I..< (SELECT P_50 FROM BA.&&VAR_&I..) THEN (SELECT P_25 FROM BA.&&VAR_&I..)
+			 WHEN &&VAR_&I.. >=(SELECT P_50 FROM BA.&&VAR_&I..) AND &&VAR_&I..< (SELECT P_75 FROM BA.&&VAR_&I..) THEN (SELECT P_50 FROM BA.&&VAR_&I..)
+			 WHEN &&VAR_&I.. >=(SELECT P_75 FROM BA.&&VAR_&I..) AND &&VAR_&I..< (SELECT P_90 FROM BA.&&VAR_&I..) THEN (SELECT P_75 FROM BA.&&VAR_&I..)
+			 WHEN &&VAR_&I.. >=(SELECT P_90 FROM BA.&&VAR_&I..) AND &&VAR_&I..< (SELECT P_95 FROM BA.&&VAR_&I..) THEN (SELECT P_90 FROM BA.&&VAR_&I..)
+			 WHEN &&VAR_&I.. >=(SELECT P_95 FROM BA.&&VAR_&I..) AND &&VAR_&I..< (SELECT P_99 FROM BA.&&VAR_&I..) THEN (SELECT P_95 FROM BA.&&VAR_&I..)
+			 WHEN &&VAR_&I.. >=(SELECT P_99 FROM BA.&&VAR_&I..) AND &&VAR_&I..< (SELECT P_100 FROM BA.&&VAR_&I..) THEN (SELECT P_99 FROM BA.&&VAR_&I..)
+			 WHEN &&VAR_&I.. >(SELECT P_99 FROM BA.&&VAR_&I..) AND (SELECT P_99 FROM BA.&&VAR_&I..) >0   THEN (SELECT P_99 * 2 FROM BA.&&VAR_&I..)
+			 WHEN &&VAR_&I.. >(SELECT P_99 FROM BA.&&VAR_&I..) AND (SELECT P_99 FROM BA.&&VAR_&I..) = 0   THEN 1
+		END AS &&VAR_&I.._REV
+FROM
+	BA.YEST A;
+QUIT;
+
+PROC SQL;
+CREATE TABLE  BA.YEST  AS 
+SELECT
+	DISTINCT A.*, B. *
+FROM
+	BA.YEST A LEFT JOIN ba.PURCH_&&VAR_&I.._T B ON A.&&VAR_&I.._REV =B.&&VAR_&I.._REV 
+;
+QUIT;
+
+%END;
+%MEND NORMALIZE;
+%NORMALIZE;
+
+data ba.yest;
+set ba.yest;
+drop  MKTG_CHNL_1 MKTG_CHNL_0 FIND_MTHD_1 FIND_MTHD_0;
+run;
+
+PROC SQL;
+CREATE TABLE  BA.YEST  AS 
+SELECT
+	DISTINCT A.*, B. *, C.*
+FROM
+	BA.YEST A 
+	LEFT JOIN ba.PURCH_MKTG_CHNL_T B ON A.marketing_channel =B.marketing_channel
+	LEFT JOIN ba.PURCH_FIND_MTHD_T C ON A.product_finding_methods =c.product_finding_methods
+;
+QUIT;
+
+
+DATA BA.YEST;
+SET  BA.YEST;
+P_Y =(MKTG_CHNL_1*FIND_MTHD_1 )* &Y_PCT_CAT.;
+P_N =(MKTG_CHNL_0*FIND_MTHD_0 )* &N_PCT_CAT.;
+RUN;
+
+
+%MACRO PROB;
+%DO I=1 %TO &i2.;
+
+%put var_&i._1= &&VAR_&I.._1  ;
+%put var_&i._0=&&VAR_&I.._0  ;
+
+%END;
+%MEND PROB;
+%PROB;
+
+
+data _null_;
+ dsid=open('BA.YEST');
+ check=varnum(dsid,'events_cnts_34_1');
+ if check=0 then put 'Variable does not exist';
+ else put 'Variable is located in column ' check +(_1) '.';
+run;
+
+
+%MACRO PROB;
+%DO I=1 %TO &i2.;
+/*%DO I=1 %TO 2;*/
+data _null_;
+ dsid=open('BA.YEST');
+Exist_1=varnum(dsid,"&&VAR_&I.._1");
+Exist_0=varnum(dsid,"&&VAR_&I.._0");
+CALL SYMPUT("Exist_1",Exist_1);
+CALL SYMPUT("Exist_0",Exist_0);
+run;
+%put &Exist_1.;
+%put &Exist_0.;
+
+%if  &Exist_1. >0 and &Exist_0. > 0 %then %do ;
+DATA BA.YEST;
+SET  BA.YEST;
+P_Y =P_Y*&&VAR_&I.._1  ;
+P_N =P_N*&&VAR_&I.._0  ;
+RUN;
+%end;
+
+%END;
+%MEND PROB;
+%PROB;
+
+DATA BA.YEST;
+SET  BA.YEST;
+P_Y_REV=P_Y/(P_Y+P_N);
+P_N_REV=P_N/(P_Y+P_N);
+RUN;
+
+PROC SORT DATA= BA.YEST;BY DESCENDING P_Y_REV ;RUN;
+
+
+PROC SQL;
+CREATE TABLE BA.YEST AS
+SELECT 
+	DISTINCT 
+		EMAIL,P_Y_REV,
+		A.PRODUCT_CODE, 
+		B.PRD_ID, 
+		B.BRAND_NAME,
+		B.BM_dESC
+FROM
+	BA.YEST A INNER JOIN saks_inventory B ON A.PRODUCT_CODE =B.PRODUCT_CODE ;
+QUIT;
+
+proc sql;select distinct date from xdb.acba_history14days order by date desc;quit;
+
+proc sql ;create table BA.YEST  as select distinct a.* from BA.YEST  a
+	left join 
+		(select distinct email_address from xdb.acba_history14days 
+		where program_name = "BA" and date > today()-8) b 
+	on upcase(a.email)=upcase(b.email_address)
+	where b.email_address is null; 
+quit;
+
+data ba_prods; set xdb.acba_history14days
+	(keep=email_address program_name date prd_1 prd_2 prd_3 prd_4 prd_5); 
+	where date >today()-8 and program_name = "BA"; drop program_name;
+run;
+
+proc append base= xdb.ba_prods data=ba_prods force; run;
+proc sql; create table xdb.ba_prods as select distinct * from xdb.ba_prods; quit;
+proc sql;select max(date) as dt format date9. from xdb.ba_prods ;quit;
+
+proc sql; create table BA.YEST as select distinct a.* from BA.YEST a 
+	left join xdb.ba_prods b on upcase(a.email)=upcase(b.email_address) and a.prd_id=b.prd_1
+	left join xdb.ba_prods c on upcase(a.email)=upcase(c.email_address) and a.prd_id=c.prd_2
+	left join xdb.ba_prods d on upcase(a.email)=upcase(d.email_address) and a.prd_id=d.prd_3
+	left join xdb.ba_prods e on upcase(a.email)=upcase(e.email_address) and a.prd_id=e.prd_4
+	left join xdb.ba_prods f on upcase(a.email)=upcase(f.email_address) and a.prd_id=f.prd_5
+	where b.prd_1 is null and c.prd_2 is null and d.prd_3 is null and e.prd_4 is null and f.prd_5 is null; quit;
+
+
+
+proc sql; 
+connect to ASTER as ast (DSN=Aster);
+create table BA.FV_YEST as
+SELECT *FROM connection to ast (
+select distinct   b.product_code, b.product_skn_id,e.email
+from dw.fact_omni_saks_events b 
+join dw.dim_visitor_devices c on b.visitor_device_uuid = c.visitor_device_uuid
+join dw.dim_customers e on c.customer_id=e.customer_id
+where event_type_id in (34, 35)
+and b.DATE_FILTER >= (TIMESTAMP "&BROWSE_DT.")
+and c.customer_id>0
+and e.email not in ( '""','0')
+);Disconnect from ast;
+Quit;
+
+/*180207*/
+
+
+PROC SORT DATA=BA.FV_YEST; BY EMAIL PRODUCT_CODE;RUN;
+PROC SORT DATA=BA.YEST; BY EMAIL PRODUCT_CODE;RUN;
+DATA BA.YEST;
+MERGE BA.YEST(IN=A) BA.FV_YEST(IN=B);
+BY EMAIL PRODUCT_CODE;
+IF A AND NOT B ;
+RUN;
+
+
+
+/*177723*/
+
+
+PROC SORT DATA= BA.YEST ; 
+BY EMAIL 
+   DESCENDING P_Y_REV;
+RUN;
+
+
+DATA BA.YEST ;
+SET BA.YEST ;
+drop s_no;
+run;
+
+DATA BA.YEST_9 ;
+SET BA.YEST ;
+BY EMAIL;
+IF FIRST. EMAIL THEN DO ;
+S_NO= .;
+END;
+S_NO+1;
+IF S_NO<=9;
+RUN;
+
+
+%MACRO TRANSPOSE ;
+%DO I=1 %TO 9; 	
+ DATA BA.YEST_&I._IND
+(DROP = S_NO RENAME = (BRAND_NAME  = BRAND_&I. BM_DESC = NAME_&I. PRODUCT_CODE = SKU_&I. PRD_ID = PRD_&I. )); 
+SET BA.YEST_9 ;
+WHERE S_NO = &I.; 
+RUN;
+PROC SORT DATA =BA.YEST_&I._IND  ; BY EMAIL; RUN;
+%END; 										/* END OF %DO */
+%MEND TRANSPOSE;
+%TRANSPOSE;
+
+DATA BA.YEST_9_T;
+MERGE 
+	BA.YEST_1_IND (IN = A)
+	BA.YEST_2_IND (IN = B)
+	BA.YEST_3_IND (IN = C)
+	BA.YEST_4_IND (IN = D)
+	BA.YEST_5_IND (IN = E)
+	BA.YEST_6_IND (IN = F)
+	BA.YEST_7_IND (IN = G)
+	BA.YEST_8_IND (IN = H)
+	BA.YEST_9_IND (IN = I)
+;
+BY EMAIL;
+IF A OR B OR C OR D OR E OR F OR G OR H OR I;
+RUN;
+
+libname y '\\t49-vol5\marketing\Youjin\Product Recommendation\SAS_DATA';
+
+PROC SQL;
+CREATE TABLE BA.YEST_9_T AS
+SELECT A.*, B. EMAIL_ID, B.CUSTOMER_ID
+FROM BA.YEST_9_T A INNER JOIN FANLI.CUSTOMER_ID B ON UPCASE(A.EMAIL)= B.EMAIL_ADDRESS;
+QUIT;
+
+data BA.YEST_9_T ;set BA.YEST_9_T ; drop brand_item rec_Strategy;run;
+
+
+PROC SQL;
+CREATE TABLE BA.YEST_9_T  AS
+SELECT A.*, B.BRAND_ITEM 
+FROM BA.YEST_9_T A LEFT JOIN Y.BRAND_ITEM B ON A.SKU_1= B.PRODUCT_CODE;
+QUIT;
+
+DATA BA.YEST_9_T  ;
+SET  BA.YEST_9_T  ;
+IF BRAND_ITEM = '' THEN BRAND_ITEM = catx(" ", brand_1, "item");
+RUN;
+
+
+DATA BA.YEST_9_T  ;
+SET  BA.YEST_9_T  ;
+REC_STRATEGY= BRAND_ITEM;
+RUN;
+
+
+
+DATA  DATE ; 
+TODAY = PUT(DATE (), YYMMDDN8.); 
+CALL SYMPUTX ('DATE',TODAY); 
+YEST = PUT(DATE ()-1, YYMMDDN8.); 
+CALL SYMPUTX ('YEST',YEST); 
+RUN;
+%PUT &DATE. ;
+%PUT &YEST. ;
+
+
+
+PROC SQL;
+CREATE TABLE XDB.ADOBE_BA_&DATE. AS
+SELECT
+	DISTINCT 
+		UPCASE(Email) as Email_Address	FORMAT	$150.,
+		Email_ID	FORMAT	30.,
+		CUSTOMER_ID AS BlueMartiniID	FORMAT	$30.,
+		TODAY() AS Date	FORMAT	mmddyy10.,
+		"BA" AS Program_Name	FORMAT	$50.,
+		6 AS Program_Code	FORMAT	4.,
+		6 AS Priority	FORMAT	4.,
+		'' AS Testing	FORMAT	$2.,
+		'' AS Recipe	FORMAT	$10.,
+		. AS P1_Val	FORMAT	4.,
+		'' AS Cat_Name	FORMAT	$50.,
+		'' AS Folder_ID	FORMAT	$30.,
+		'' AS Folder1	FORMAT	$30.,
+		'' AS Folder2	FORMAT	$30.,
+		'' AS Folder3	FORMAT	$30.,
+		'' AS Folder4	FORMAT	$30.,
+		REC_STRATEGY AS Rec_Strategy	FORMAT	$100.,
+		'' AS Copy1	FORMAT	$100.,
+		'' AS Copy2	FORMAT	$100.,
+		'' AS Copy3	FORMAT	$100.,
+		'' AS Copy4	FORMAT	$100.,
+		'' AS promo_code	FORMAT	$30.,
+		'' AS barcode	FORMAT	$30.,
+		'' AS RR_Recs	FORMAT	$3.,
+		. AS Products_Total	FORMAT	5.,
+		 Prd_1	FORMAT	$30.,
+		 Sku_1	FORMAT	$30.,
+		 Brand_1 FORMAT	$50.,
+		 Name_1	FORMAT	$250.,
+		 Prd_2	FORMAT	$30.,
+		 Sku_2	FORMAT	$30.,
+		 Brand_2	FORMAT	$50.,
+		 Name_2	FORMAT	$250.,
+		 Prd_3	FORMAT	$30.,
+		 Sku_3	FORMAT	$30.,
+		 Brand_3	FORMAT	$50.,
+		 Name_3	FORMAT	$250.,
+		 Prd_4	FORMAT	$30.,
+		 Sku_4	FORMAT	$30.,
+		 Brand_4	FORMAT	$50.,
+		 Name_4	FORMAT	$250.,
+		 Prd_5	FORMAT	$30.,
+		 Sku_5	FORMAT	$30.,
+		 Brand_5	FORMAT	$50.,
+		 Name_5	FORMAT	$250.,
+		 '' as Prd_6	FORMAT	$30.,
+		 '' as Sku_6	FORMAT	$30.,
+		 '' as Brand_6	FORMAT	$50.,
+		 '' as Name_6	FORMAT	$50.,
+		 '' as Prd_7	FORMAT	$30.,
+		 '' as Sku_7	FORMAT	$30.,
+		 '' as Brand_7	FORMAT	$50.,
+		 '' as Name_7	FORMAT	$50.,
+		 '' as Prd_8	FORMAT	$30.,
+		 '' as Sku_8	FORMAT	$30.,
+		 '' as Brand_8	FORMAT	$50.,
+		 '' as Name_8	FORMAT	$50.,
+		 '' as Prd_9	FORMAT	$30.,
+		 '' as Sku_9	FORMAT	$30.,
+		 '' as Brand_9	FORMAT	$50.,
+		 '' as Name_9	FORMAT	$50.,
+		 '' AS WL_Rcvd_Status	FORMAT	$2.,
+		 '' AS LI_Type	FORMAT	$2.,
+		 . AS Inv_1	FORMAT	5.,
+		 . AS Inv_2	FORMAT	5.,
+		 . AS Inv_3	FORMAT	5.,
+		 . AS Inv_4	FORMAT	5.,
+		 . AS Inv_5	FORMAT	5.,
+		 . AS Inv_6	FORMAT	5.,
+		 . AS Inv_7	FORMAT	5.,
+		 . AS Inv_8	FORMAT	5.,
+		 . AS Inv_9	FORMAT	5.
+FROM
+	BA.YEST_9_T
+;
+QUIT;
+
+/**/
+/*proc sql;*/
+/*create table ba.price_&date. as*/
+/*select distinct product_code, max(sku_sale_price) as sku_sale_price , today() as date format date9.*/
+/*from sddb.product*/
+/*group by product_code;*/
+/*quit;*/
+
+
+PROC SQL;
+CONNECT TO oracle as db ( path=neworacle user=fanlizhou pass=z658702 );
+CREATE TABLE ba.price_&date.    AS
+select * from connection to db
+	(
+	SELECT  
+	 distinct product_code,  max(sku_sale_price) as sku_sale_price  
+	FROM 
+		SDMRK.product 
+	GROUP BY product_code
+)
+;
+Disconnect from db;
+Quit;
+
+DATA ba.price_&date.;SET ba.price_&date.;
+date=TODAY();
+RUN;
+
+
+proc sql;
+select max(P_Y_REV) as max_p, min(P_Y_REV) as min_p from ba.yest;
+quit;
+
+proc univariate data=ba.yest plot noprint;
+var P_Y_REV ;
+output out= ba.P_Y_REV_univ  n=n nmiss=nmiss min=min max=max mean=mean std=std 
+pctlpts=0 10  20 30 40 50 60 70 80  90 95 99 100 pctlpre=p_ ;
+run;
+
+
+
+/*product_code*/
+/*prd_id*/
+/*price_yest (price when they viewed the product)*/
+/*probability*/
+/*list_date (date file was created)*/
+/*email_id*/
+/*email_address*/
+/*;*/
+
+
+libname xdbp 'F:\XDB\BA_Fanli';
+
+proc sql;
+create table xdbp.ba_pool_&date. as
+select
+	distinct 
+		upcase(email) as email_address,
+		b.email_id, 
+		product_code, 
+		prd_id, 
+		today() as list_date format date9.,
+		p_y_rev as probability
+from  
+	ba.yest a inner join FANLI.CUSTOMER_ID b on upcase(a.email)= b.email_address
+;
+quit;
+
+proc sql;
+create table xdbp.ba_pool_&date. as
+select distinct a.*, b. sku_sale_price as price_yest 
+from xdbp.ba_pool_&date. a inner join ba.Price_&yest.  b on a.product_code= b.product_code;
+quit;
+
